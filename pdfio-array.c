@@ -120,8 +120,9 @@ pdfioArrayAppendDate(
     return (false);
 
   // Add a dictionary...
-  v.type       = PDFIO_VALTYPE_DATE;
-  v.value.date = value;
+  v.type              = PDFIO_VALTYPE_DATE;
+  v.value.date.date   = value;
+  v.value.date.string = NULL;
 
   return (append_value(a, &v));
 }
@@ -419,7 +420,7 @@ pdfioArrayGetBinary(
     size_t        n,			// I - Index
     size_t        *length)		// O - Length of string
 {
-  if (!a || n >= a->num_values || (a->values[n].type != PDFIO_VALTYPE_BINARY && a->values[n].type != PDFIO_VALTYPE_STRING && a->values[n].type != PDFIO_VALTYPE_NAME))
+  if (!a || n >= a->num_values || (a->values[n].type != PDFIO_VALTYPE_BINARY && a->values[n].type != PDFIO_VALTYPE_STRING && a->values[n].type != PDFIO_VALTYPE_NAME && a->values[n].type != PDFIO_VALTYPE_DATE))
   {
     if (length)
       *length = 0;
@@ -439,6 +440,15 @@ pdfioArrayGetBinary(
       *length = strlen(a->values[n].value.name);
 
     return ((unsigned char *)a->values[n].value.name);
+  }
+  else if (a->values[n].type == PDFIO_VALTYPE_DATE)
+  {
+    _pdfioValueFillDateString(a->pdf, &(a->values[n]));
+
+    if (length)
+      *length = strlen(a->values[n].value.date.string);
+
+    return ((unsigned char *)a->values[n].value.date.string);
   }
   else
   {
@@ -476,7 +486,7 @@ pdfioArrayGetDate(pdfio_array_t *a,	// I - Array
   if (!a || n >= a->num_values || a->values[n].type != PDFIO_VALTYPE_DATE)
     return (0);
   else
-    return (a->values[n].value.date);
+    return (a->values[n].value.date.date);
 }
 
 
@@ -559,8 +569,13 @@ const char *				// O - Value
 pdfioArrayGetString(pdfio_array_t *a,	// I - Array
                     size_t        n)	// I - Index
 {
-  if (!a || n >= a->num_values || a->values[n].type != PDFIO_VALTYPE_STRING)
+  if (!a || n >= a->num_values || (a->values[n].type != PDFIO_VALTYPE_STRING && a->values[n].type != PDFIO_VALTYPE_DATE))
     return (NULL);
+  else if (a->values[n].type == PDFIO_VALTYPE_DATE)
+  {
+    _pdfioValueFillDateString(a->pdf, &(a->values[n]));
+    return (a->values[n].value.date.string);
+  }
   else
     return (a->values[n].value.string);
 }
