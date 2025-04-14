@@ -912,7 +912,7 @@ get_date_time(const char *s)		// I - PDF date/time value
 #  else
   // Adjust the time value using the even more legacy "timezone" variable,
   // which also reflects any DST offset...
-  t += timezone;
+  t -= timezone;
 #  endif // HAVE_TM_GMTOFF
 #endif // _WIN32
 
