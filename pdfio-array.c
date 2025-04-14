@@ -419,7 +419,7 @@ pdfioArrayGetBinary(
     size_t        n,			// I - Index
     size_t        *length)		// O - Length of string
 {
-  if (!a || n >= a->num_values || (a->values[n].type != PDFIO_VALTYPE_BINARY && a->values[n].type != PDFIO_VALTYPE_STRING))
+  if (!a || n >= a->num_values || (a->values[n].type != PDFIO_VALTYPE_BINARY && a->values[n].type != PDFIO_VALTYPE_STRING && a->values[n].type != PDFIO_VALTYPE_NAME))
   {
     if (length)
       *length = 0;
@@ -432,6 +432,13 @@ pdfioArrayGetBinary(
       *length = a->values[n].value.binary.datalen;
 
     return (a->values[n].value.binary.data);
+  }
+  else if (a->values[n].type == PDFIO_VALTYPE_NAME)
+  {
+    if (length)
+      *length = strlen(a->values[n].value.name);
+
+    return ((unsigned char *)a->values[n].value.name);
   }
   else
   {
