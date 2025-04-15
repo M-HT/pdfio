@@ -1742,6 +1742,7 @@ load_xref(
   int		generation;		// Generation number
   _pdfio_token_t tb;			// Token buffer/stack
   off_t		line_offset;		// Offset to start of line
+  off_t		new_offset;
 
 
   while (!done)
@@ -2167,7 +2168,7 @@ load_xref(
     PDFIO_DEBUG_VALUE(&trailer);
     PDFIO_DEBUG("\n");
 
-    off_t new_offset = (off_t)pdfioDictGetNumber(trailer.value.dict, "Prev");
+    new_offset = (off_t)pdfioDictGetNumber(trailer.value.dict, "Prev");
 
     if (new_offset <= 0)
     {

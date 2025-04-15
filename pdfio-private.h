@@ -25,10 +25,11 @@
 #    include <io.h>
 #    include <direct.h>
 #    include <windows.h> // GetTempPathA
+#   ifndef lseek
 #    define access	_access		// Map standard POSIX/C99 names
 #    define close	_close
 #    define fileno	_fileno
-#    define lseek	_lseek
+#    define lseek	_lseeki64
 #    define mkdir(d,p)	_mkdir(d)
 #    define open	_open
 #    define read	_read
@@ -38,6 +39,7 @@
 #    define unlink	_unlink
 #    define vsnprintf	_vsnprintf
 #    define write	_write
+#   endif // !lseek
 #    ifndef F_OK
 #      define F_OK	00		// POSIX parameters/flags
 #      define W_OK	02
@@ -47,6 +49,7 @@
 #    define O_WRONLY	_O_WRONLY
 #    define O_CREAT	_O_CREAT
 #    define O_TRUNC	_O_TRUNC
+#    define O_EXCL	_O_EXCL
 #    define O_BINARY	_O_BINARY
 #  else // !_WIN32
 #    include <unistd.h>
