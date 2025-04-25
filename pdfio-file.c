@@ -2136,7 +2136,7 @@ load_xref(
 	    continue;
 	}
 
-	if (sscanf(line, "%jd%jd", &number, &num_objects) != 2)
+	if (sscanf(line, "%"SCNdMAX"%"SCNdMAX, &number, &num_objects) != 2)
 	{
 	  PDFIO_DEBUG("load_xref: Unable to scan START COUNT from line.\n");
 	  goto repair;
