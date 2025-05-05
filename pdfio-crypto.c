@@ -301,6 +301,7 @@ _pdfioCryptoMakeRandom(uint8_t *buffer,	// I - Buffer
   }
 #  endif // _WIN32
 
+{
   // If we get here then we were unable to get enough random data or the local
   // system doesn't have enough entropy.  Make some up...
   uint32_t	i,			// Looping var
@@ -390,6 +391,7 @@ _pdfioCryptoMakeRandom(uint8_t *buffer,	// I - Buffer
           break;
     }
   }
+}
 #endif // __APPLE__
 }
 

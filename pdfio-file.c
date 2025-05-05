@@ -1800,6 +1800,7 @@ load_xref(
   _pdfio_token_t tb;			// Token buffer/stack
   off_t		line_offset;		// Offset to start of line
   pdfio_obj_t	*pages_obj;		// Pages object
+  off_t		new_offset;
 
 
   while (!done)
@@ -2247,7 +2248,7 @@ load_xref(
     PDFIO_DEBUG_VALUE(&trailer);
     PDFIO_DEBUG("\n");
 
-    off_t new_offset = (off_t)pdfioDictGetNumber(trailer.value.dict, "Prev");
+    new_offset = (off_t)pdfioDictGetNumber(trailer.value.dict, "Prev");
 
     if (new_offset <= 0)
     {
@@ -2655,16 +2656,12 @@ write_trailer(pdfio_file_t *pdf)	// I - PDF file
             buffer[2] = (obj->offset >> 8) & 255;
             buffer[3] = obj->offset & 255;
             break;
-#ifdef _WIN32
-	default :
-#endif // _WIN32
         case 4 :
             buffer[1] = (obj->offset >> 24) & 255;
             buffer[2] = (obj->offset >> 16) & 255;
             buffer[3] = (obj->offset >> 8) & 255;
             buffer[4] = obj->offset & 255;
             break;
-#ifndef _WIN32 // Windows off_t is 32-bits?!?
         case 5 :
             buffer[1] = (obj->offset >> 32) & 255;
             buffer[2] = (obj->offset >> 24) & 255;
@@ -2699,7 +2696,6 @@ write_trailer(pdfio_file_t *pdf)	// I - PDF file
             buffer[7] = (obj->offset >> 8) & 255;
             buffer[8] = obj->offset & 255;
             break;
-#endif // !_WIN32
       }
 
       if (!pdfioStreamWrite(xref_st, buffer, offsize + 2))
