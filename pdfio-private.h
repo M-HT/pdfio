@@ -145,7 +145,11 @@ typedef struct _pdfio_value_s		// Value structure
       size_t		datalen;	// Length
     }		binary;			// Binary ("Hex String") data
     bool	boolean;		// Boolean value
-    time_t	date;			// Date/time value
+    struct
+    {
+      time_t		date;		// Date/time value
+      const char	*string;	// String value
+    }		date;			// Date/time value
     pdfio_dict_t *dict;			// Dictionary value
     struct
     {
@@ -420,6 +424,7 @@ extern void		_pdfioValueDebug(_pdfio_value_t *v, FILE *fp) _PDFIO_INTERNAL;
 extern void		_pdfioValueDelete(_pdfio_value_t *v) _PDFIO_INTERNAL;
 extern _pdfio_value_t	*_pdfioValueRead(pdfio_file_t *pdf, pdfio_obj_t *obj, _pdfio_token_t *ts, _pdfio_value_t *v, size_t depth) _PDFIO_INTERNAL;
 extern bool		_pdfioValueWrite(pdfio_file_t *pdf, pdfio_obj_t *obj, _pdfio_value_t *v, off_t *length) _PDFIO_INTERNAL;
+extern void		_pdfioValueFillDateString(pdfio_file_t *pdf, _pdfio_value_t *v) _PDFIO_INTERNAL;
 
 
 #endif // !PDFIO_PRIVATE_H

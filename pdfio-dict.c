@@ -282,6 +282,12 @@ pdfioDictGetBinary(pdfio_dict_t *dict,	// I - Dictionary
     *length = strlen(value->value.name);
     return ((unsigned char *)value->value.name);
   }
+  else if (value && value->type == PDFIO_VALTYPE_DATE)
+  {
+    _pdfioValueFillDateString(dict->pdf, value);
+    *length = strlen(value->value.date.string);
+    return ((unsigned char *)value->value.date.string);
+  }
   else if (value && value->type == PDFIO_VALTYPE_STRING)
   {
     *length = strlen(value->value.string);
@@ -325,7 +331,7 @@ pdfioDictGetDate(pdfio_dict_t *dict,	// I - Dictionary
 
 
   if (value && value->type == PDFIO_VALTYPE_DATE)
-    return (value->value.date);
+    return (value->value.date.date);
   else
     return (0);
 }
@@ -472,6 +478,11 @@ pdfioDictGetString(pdfio_dict_t *dict,	// I - Dictionary
   if (value && value->type == PDFIO_VALTYPE_STRING)
   {
     return (value->value.string);
+  }
+  else if (value && value->type == PDFIO_VALTYPE_DATE)
+  {
+    _pdfioValueFillDateString(dict->pdf, value);
+    return (value->value.date.string);
   }
   else if (value && value->type == PDFIO_VALTYPE_BINARY && value->value.binary.datalen < 4096)
   {
@@ -769,8 +780,9 @@ pdfioDictSetDate(pdfio_dict_t *dict,	// I - Dictionary
     return (false);
 
   // Set the key/value pair...
-  temp.type       = PDFIO_VALTYPE_DATE;
-  temp.value.date = value;
+  temp.type              = PDFIO_VALTYPE_DATE;
+  temp.value.date.date   = value;
+  temp.value.date.string = NULL;
 
   return (_pdfioDictSetValue(dict, key, &temp));
 }

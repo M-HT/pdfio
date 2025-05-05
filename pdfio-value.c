@@ -91,10 +91,14 @@ _pdfioValueCopy(pdfio_file_t   *pdfdst,	// I - Destination PDF file
         break;
 
     case PDFIO_VALTYPE_BOOLEAN :
-    case PDFIO_VALTYPE_DATE :
     case PDFIO_VALTYPE_NUMBER :
 	*vdst = *vsrc;
         return (vdst);
+
+    case PDFIO_VALTYPE_DATE :
+        vdst->value.date.date   = vsrc->value.date.date;
+        vdst->value.date.string = NULL;
+        break;
 
     case PDFIO_VALTYPE_DICT :
         vdst->value.dict = pdfioDictCopy(pdfdst, vsrc->value.dict);
@@ -215,8 +219,9 @@ _pdfioValueDecrypt(pdfio_file_t   *pdf,	// I - PDF file
 	  if ((timeval = get_date_time((char *)utf8)) != 0)
 	  {
 	    // Change the type to date...
-	    v->type       = PDFIO_VALTYPE_DATE;
-	    v->value.date = timeval;
+	    v->type              = PDFIO_VALTYPE_DATE;
+	    v->value.date.date   = timeval;
+	    v->value.date.string = pdfioStringCreate(pdf, utf8);
 	  }
 	  else
 	  {
@@ -227,8 +232,9 @@ _pdfioValueDecrypt(pdfio_file_t   *pdf,	// I - PDF file
         else if ((timeval = get_date_time((char *)temp)) != 0)
         {
           // Change the type to date...
-          v->type       = PDFIO_VALTYPE_DATE;
-          v->value.date = timeval;
+          v->type              = PDFIO_VALTYPE_DATE;
+          v->value.date.date   = timeval;
+          v->value.date.string = pdfioStringCreate(pdf, (char *)temp);
         }
         else
         {
@@ -279,9 +285,9 @@ _pdfioValueDebug(_pdfio_value_t *v,	// I - Value
 	  struct tm	dateval;	// Date value
 
 #ifdef _WIN32
-          gmtime_s(&dateval, &v->value.date);
+          gmtime_s(&dateval, &v->value.date.date);
 #else
-          gmtime_r(&v->value.date, &dateval);
+          gmtime_r(&v->value.date.date, &dateval);
 #endif // _WIN32
 
           fprintf(fp, "(D:%04d%02d%02d%02d%02d%02dZ)", dateval.tm_year + 1900, dateval.tm_mon + 1, dateval.tm_mday, dateval.tm_hour, dateval.tm_min, dateval.tm_sec);
@@ -402,9 +408,10 @@ _pdfioValueRead(pdfio_file_t   *pdf,	// I - PDF file
     if ((timeval = get_date_time(token + 1)) != 0)
     {
       // Date
-      v->type       = PDFIO_VALTYPE_DATE;
-      v->value.date = timeval;
-      ret           = v;
+      v->type              = PDFIO_VALTYPE_DATE;
+      v->value.date.date   = timeval;
+      v->value.date.string = pdfioStringCreate(pdf, token + 1);
+      ret                  = v;
     }
     else
     {
@@ -683,9 +690,9 @@ _pdfioValueWrite(pdfio_file_t   *pdf,	// I - PDF file
           char		datestr[32];	// Formatted date value
 
 #ifdef _WIN32
-          gmtime_s(&date, &v->value.date);
+          gmtime_s(&date, &v->value.date.date);
 #else
-	  gmtime_r(&v->value.date, &date);
+	  gmtime_r(&v->value.date.date, &date);
 #endif // _WIN32
 
 	  snprintf(datestr, sizeof(datestr), "D:%04d%02d%02d%02d%02d%02dZ", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday, date.tm_hour, date.tm_min, date.tm_sec);
@@ -796,6 +803,25 @@ _pdfioValueWrite(pdfio_file_t   *pdf,	// I - PDF file
   }
 
   return (false);
+}
+
+void
+_pdfioValueFillDateString(pdfio_file_t *pdf, _pdfio_value_t *v)
+{
+  if (v->value.date.string == NULL)
+  {
+    struct tm	date;		// Date values
+    char		datestr[32];	// Formatted date value
+
+#ifdef _WIN32
+    gmtime_s(&date, &v->value.date.date);
+#else
+    gmtime_r(&v->value.date.date, &date);
+#endif // _WIN32
+
+    snprintf(datestr, sizeof(datestr), "D:%04d%02d%02d%02d%02d%02dZ", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday, date.tm_hour, date.tm_min, date.tm_sec);
+    v->value.date.string = pdfioStringCreate(pdf, datestr);
+  }
 }
 
 
