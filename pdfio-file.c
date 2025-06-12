@@ -1082,7 +1082,7 @@ pdfioFileOpen(
   pdf->version = strdup(line + 5);
 
   // Grab the last 1k of the file to find the start of the xref table...
-  if (_pdfioFileSeek(pdf, 1 - sizeof(line), SEEK_END) < 0)
+  if (_pdfioFileSeek(pdf, 1 - (ssize_t)sizeof(line), SEEK_END) < 0)
   {
     _pdfioFileError(pdf, "Unable to read startxref data.");
     goto error;
