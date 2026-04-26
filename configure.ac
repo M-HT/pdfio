@@ -1,7 +1,7 @@
 dnl
 dnl Configuration script for PDFio
 dnl
-dnl Copyright © 2023-2025 by Michael R Sweet
+dnl Copyright © 2023-2026 by Michael R Sweet
 dnl
 dnl Licensed under Apache License v2.0.  See the file "LICENSE" for more
 dnl information.
@@ -21,7 +21,7 @@ AC_PREREQ([2.70])
 
 
 dnl Package name and version...
-AC_INIT([pdfio], [1.5.4], [https://github.com/michaelrsweet/pdfio/issues], [pdfio], [https://www.msweet.org/pdfio])
+AC_INIT([pdfio], [1.6.3], [https://github.com/michaelrsweet/pdfio/issues], [pdfio], [https://www.msweet.org/pdfio])
 
 PDFIO_VERSION="AC_PACKAGE_VERSION"
 PDFIO_VERSION_MAJOR="`echo AC_PACKAGE_VERSION | awk -F. '{print $1}'`"
@@ -88,6 +88,10 @@ AC_SUBST([INSTALL])
 AC_MSG_RESULT([using $INSTALL])
 
 
+dnl Standard C stuff...
+AC_CHECK_HEADER([math.h])
+
+
 dnl Check for date/time functionality...
 AC_CHECK_FUNC([timegm], [
     AC_DEFINE([HAVE_TIMEGM], [1], [Do we have the timegm function?])
@@ -115,11 +119,13 @@ AC_PATH_TOOL([PKGCONFIG], [pkg-config])
 PKGCONFIG_CFLAGS="-I\${includedir}"
 PKGCONFIG_LIBS="-L\${libdir} -lpdfio"
 PKGCONFIG_LIBS_PRIVATE="-lm"
-PKGCONFIG_REQUIRES="zlib"
+PKBCONFIG_REQUIRES=""
+PKGCONFIG_REQUIRES_PRIVATE=""
 AC_SUBST([PKGCONFIG_CFLAGS])
 AC_SUBST([PKGCONFIG_LIBS])
 AC_SUBST([PKGCONFIG_LIBS_PRIVATE])
 AC_SUBST([PKGCONFIG_REQUIRES])
+AC_SUBST([PKGCONFIG_REQUIRES_PRIVATE])
 
 
 dnl ZLIB
@@ -128,6 +134,7 @@ AS_IF([$PKGCONFIG --exists zlib], [
     AC_MSG_RESULT([yes])
     CPPFLAGS="$($PKGCONFIG --cflags zlib) $CPPFLAGS"
     LIBS="$($PKGCONFIG --libs zlib) $LIBS"
+    PKGCONFIG_REQUIRES_PRIVATE="zlib"
 ],[
     AC_MSG_RESULT([no])
     AC_CHECK_HEADER([zlib.h])
@@ -137,16 +144,11 @@ AS_IF([$PKGCONFIG --exists zlib], [
 	AC_MSG_ERROR([Sorry, this software requires zlib 1.1 or higher.])
     ])
 
-    PKGCONFIG_REQUIRES=""
     PKGCONFIG_LIBS_PRIVATE="-lz $PKGCONFIG_LIBS_PRIVATE"
 ])
 
-
 dnl libpng...
 AC_ARG_ENABLE([libpng], AS_HELP_STRING([--enable-libpng], [use libpng for pdfioFileCreateImageObjFromFile, default=auto]))
-
-PKGCONFIG_LIBPNG=""
-AC_SUBST([PKGCONFIG_LIBPNG])
 
 AS_IF([test "x$PKGCONFIG" != x -a x$enable_libpng != xno], [
     AC_MSG_CHECKING([for libpng-1.6.x])
@@ -155,8 +157,11 @@ AS_IF([test "x$PKGCONFIG" != x -a x$enable_libpng != xno], [
 	AC_DEFINE([HAVE_LIBPNG], 1, [Have PNG library?])
 	CPPFLAGS="$($PKGCONFIG --cflags libpng16) -DHAVE_LIBPNG=1 $CPPFLAGS"
 	LIBS="$($PKGCONFIG --libs libpng16) -lz $LIBS"
-	PKGCONFIG_LIBS_PRIVATE="$($PKGCONFIG --libs libpng16) $PKGCONFIG_LIBS_PRIVATE"
-	PKGCONFIG_REQUIRES="libpng >= 1.6,$PKGCONFIG_REQUIRES"
+	AS_IF([test "x$PKGCONFIG_REQUIRES_PRIVATE" = x], [
+	    PKGCONFIG_REQUIRES_PRIVATE="libpng >= 1.6"
+	], [
+	    PKGCONFIG_REQUIRES_PRIVATE="libpng >= 1.6, $PKGCONFIG_REQUIRES_PRIVATE"
+	])
     ], [
 	AC_MSG_RESULT([no]);
 	AS_IF([test x$enable_libpng = xyes], [
@@ -189,6 +194,8 @@ AS_IF([test x$enable_shared = xyes], [
     LIBPDFIO_STATIC=""
     PKGCONFIG_LIBS="$PKGCONFIG_LIBS $PKGCONFIG_LIBS_PRIVATE"
     PKGCONFIG_LIBS_PRIVATE=""
+    PKGCONFIG_REQUIRES="$PKGCONFIG_REQUIRES_PRIVATE"
+    PKGCONFIG_REQUIRES_PRIVATE=""
 ])
 
 AC_SUBST([LIBPDFIO])

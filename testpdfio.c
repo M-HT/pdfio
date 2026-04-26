@@ -1,20 +1,25 @@
 //
 // Test program for PDFio.
 //
-// Copyright © 2021-2024 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
 //
 // Usage:
 //
-//   ./testpdfio
+//   ./testpdfio OPTIONS [FILENAME {OBJECT-NUMBER,OUT-FILENAME}] ...
 //
-//   ./testpdfio [--verbose] FILENAME [OBJECT-NUMBER] [FILENAME [OBJECT-NUMBER]] ...
+// Options:
+//
+//   --help                   Show help
+//   --password PASSWORD      Set access password
+//   --verbose                Be verbose
 //
 
 #include "pdfio-private.h"
 #include "pdfio-content.h"
+#include "test.h"
 #include <math.h>
 #include <locale.h>
 #ifndef M_PI
@@ -27,7 +32,8 @@
 //
 
 static int	do_crypto_tests(void);
-static int	do_test_file(const char *filename, int objnum, const char *password, bool verbose);
+static int	do_pdfa_tests(void);
+static int	do_test_file(const char *filename, const char *outfile, int objnum, const char *password, bool verbose);
 static int	do_unit_tests(void);
 static int	draw_image(pdfio_stream_t *st, const char *name, double x, double y, double w, double h, const char *label);
 static bool	error_cb(pdfio_file_t *pdf, const char *message, bool *error);
@@ -47,6 +53,7 @@ static int	write_header_footer(pdfio_stream_t *st, const char *title, int number
 static pdfio_obj_t *write_image_object(pdfio_file_t *pdf, _pdfio_predictor_t predictor);
 static int	write_images_test(pdfio_file_t *pdf, int number, pdfio_obj_t *font);
 static int	write_jpeg_test(pdfio_file_t *pdf, const char *title, int number, pdfio_obj_t *font, pdfio_obj_t *image);
+static int	write_pdfa_file(const char *filename, const char *pdfa_version);
 static int	write_png_tests(pdfio_file_t *pdf, int number, pdfio_obj_t *font);
 static int	write_text_test(pdfio_file_t *pdf, int first_page, pdfio_obj_t *font, const char *filename);
 static int	write_unit_file(pdfio_file_t *inpdf, const char *outname, pdfio_file_t *outpdf, size_t *num_pages, size_t *first_image);
@@ -100,14 +107,18 @@ main(int  argc,				// I - Number of command-line arguments
       else if ((i + 1) < argc && isdigit(argv[i + 1][0] & 255))
       {
         // filename.pdf object-number
-        if (do_test_file(argv[i], atoi(argv[i + 1]), password, verbose))
+        if (do_test_file(argv[i], /*outfile*/NULL, atoi(argv[i + 1]), password, verbose))
 	  ret = 1;
 
 	i ++;
       }
-      else if (do_test_file(argv[i], 0, password, verbose))
+      else
       {
-        ret = 1;
+        if (do_test_file(argv[i], argv[i + 1], /*objnum*/0, password, verbose))
+          ret = 1;
+
+        if (argv[i + 1])
+          i ++;
       }
     }
   }
@@ -163,11 +174,11 @@ do_crypto_tests(void)
 					// Expected SHA-256 hash result
 
 
-  fputs("_pdfioAESInit(128-bit sample key): ", stdout);
+  testBegin("_pdfioAESInit(128-bit sample key)");
   _pdfioCryptoAESInit(&aes, aes128key, sizeof(aes128key), NULL);
   if (!memcmp(aes128rounds, aes.round_key, sizeof(aes128rounds)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -180,11 +191,11 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = i < (sizeof(aes128rounds) - 4) ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, aes.round_key[i], aes.round_key[i + 1], aes.round_key[i + 2], aes.round_key[i + 3], suffix, prefix, aes128rounds[i], aes128rounds[i + 1], aes128rounds[i + 2], aes128rounds[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, aes.round_key[i], aes.round_key[i + 1], aes.round_key[i + 2], aes.round_key[i + 3], suffix, prefix, aes128rounds[i], aes128rounds[i + 1], aes128rounds[i + 2], aes128rounds[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioAESInit/Encrypt(128-bit CBC): ", stdout);
+  testBegin("_pdfioAESInit/Encrypt(128-bit CBC)");
   for (i = 0; i < 16; i ++)
   {
     key[i] = (uint8_t)i + 1;
@@ -196,7 +207,7 @@ do_crypto_tests(void)
 
   if (!memcmp(aes128text, buffer, sizeof(aes128text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -209,17 +220,17 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = i < (sizeof(aes128text) - 4) ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], suffix, prefix, aes128text[i], aes128text[i + 1], aes128text[i + 2], aes128text[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], suffix, prefix, aes128text[i], aes128text[i + 1], aes128text[i + 2], aes128text[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioAESInit/Decrypt(128-bit CBC): ", stdout);
+  testBegin("_pdfioAESInit/Decrypt(128-bit CBC)");
   _pdfioCryptoAESInit(&aes, key, 16, iv);
   _pdfioCryptoAESDecrypt(&aes, buffer2, buffer, sizeof(aes128text));
 
   if (!memcmp(buffer2, text, strlen(text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -232,11 +243,11 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = text[i + 4] ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, buffer2[i], buffer2[i + 1], buffer2[i + 2], buffer2[i + 3], suffix, prefix, text[i], text[i + 1], text[i + 2], text[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, buffer2[i], buffer2[i + 1], buffer2[i + 2], buffer2[i + 3], suffix, prefix, text[i], text[i + 1], text[i + 2], text[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioAESInit/Encrypt(256-bit CBC): ", stdout);
+  testBegin("_pdfioAESInit/Encrypt(256-bit CBC)");
   for (i = 0; i < 32; i ++)
   {
     key[i] = (uint8_t)i + 1;
@@ -248,7 +259,7 @@ do_crypto_tests(void)
 
   if (!memcmp(aes256text, buffer, sizeof(aes256text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -261,17 +272,17 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = i < (sizeof(aes256text) - 4) ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], suffix, prefix, aes256text[i], aes256text[i + 1], aes256text[i + 2], aes256text[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], suffix, prefix, aes256text[i], aes256text[i + 1], aes256text[i + 2], aes256text[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioAESInit/Decrypt(256-bit CBC): ", stdout);
+  testBegin("_pdfioAESInit/Decrypt(256-bit CBC)");
   _pdfioCryptoAESInit(&aes, key, 32, iv);
   _pdfioCryptoAESDecrypt(&aes, buffer2, buffer, sizeof(aes256text));
 
   if (!memcmp(buffer2, text, strlen(text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -284,26 +295,26 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = text[i + 4] ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, buffer2[i], buffer2[i + 1], buffer2[i + 2], buffer2[i + 3], suffix, prefix, text[i], text[i + 1], text[i + 2], text[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, buffer2[i], buffer2[i + 1], buffer2[i + 2], buffer2[i + 3], suffix, prefix, text[i], text[i + 1], text[i + 2], text[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioMD5Init/Append/Finish: ", stdout);
+  testBegin("_pdfioMD5Init/Append/Finish");
   _pdfioCryptoMD5Init(&md5);
   _pdfioCryptoMD5Append(&md5, (uint8_t *)text, strlen(text));
   _pdfioCryptoMD5Finish(&md5, buffer);
 
   if (!memcmp(md5text, buffer, sizeof(md5text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (got '%02X%02X%02X%02X...%02X%02X%02X%02X', expected '%02X%02X%02X%02X...%02X%02X%02X%02X')\n", buffer[0], buffer[1], buffer[2], buffer[3], buffer[12], buffer[13], buffer[14], buffer[15], md5text[0], md5text[1], md5text[2], md5text[3], md5text[12], md5text[13], md5text[14], md5text[15]);
+    testEndMessage(false, "got '%02X%02X%02X%02X...%02X%02X%02X%02X', expected '%02X%02X%02X%02X...%02X%02X%02X%02X'", buffer[0], buffer[1], buffer[2], buffer[3], buffer[12], buffer[13], buffer[14], buffer[15], md5text[0], md5text[1], md5text[2], md5text[3], md5text[12], md5text[13], md5text[14], md5text[15]);
     ret = 1;
   }
 
-  fputs("_pdfioRC4Init/Encrypt(128-bit): ", stdout);
+  testBegin("_pdfioRC4Init/Encrypt(128-bit)");
   for (i = 0; i < 16; i ++)
     key[i] = (uint8_t)i + 1;
 
@@ -312,7 +323,7 @@ do_crypto_tests(void)
 
   if (!memcmp(rc4text, buffer, sizeof(rc4text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -325,17 +336,17 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = i < (sizeof(rc4text) - 4) ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], suffix, prefix, rc4text[i], rc4text[i + 1], rc4text[i + 2], rc4text[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3], suffix, prefix, rc4text[i], rc4text[i + 1], rc4text[i + 2], rc4text[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioRC4Init/Decrypt(128-bit): ", stdout);
+  testBegin("_pdfioRC4Init/Decrypt(128-bit)");
   _pdfioCryptoRC4Init(&rc4, key, 16);
   _pdfioCryptoRC4Crypt(&rc4, buffer2, buffer, strlen(text));
 
   if (!memcmp(buffer2, text, strlen(text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
@@ -348,26 +359,76 @@ do_crypto_tests(void)
     prefix = i > 0 ? "..." : "";
     suffix = text[i + 4] ? "..." : "";
 
-    printf("FAIL (got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s')\n", prefix, buffer2[i], buffer2[i + 1], buffer2[i + 2], buffer2[i + 3], suffix, prefix, text[i], text[i + 1], text[i + 2], text[i + 3], suffix);
+    testEndMessage(false, "got '%s%02X%02X%02X%02X%s', expected '%s%02X%02X%02X%02X%s'", prefix, buffer2[i], buffer2[i + 1], buffer2[i + 2], buffer2[i + 3], suffix, prefix, text[i], text[i + 1], text[i + 2], text[i + 3], suffix);
     ret = 1;
   }
 
-  fputs("_pdfioSHA256Init/Append/Finish: ", stdout);
+  testBegin("_pdfioSHA256Init/Append/Finish");
   _pdfioCryptoSHA256Init(&sha256);
   _pdfioCryptoSHA256Append(&sha256, (uint8_t *)text, strlen(text));
   _pdfioCryptoSHA256Finish(&sha256, buffer);
 
   if (!memcmp(sha256text, buffer, sizeof(sha256text)))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (got '%02X%02X%02X%02X...%02X%02X%02X%02X', expected '%02X%02X%02X%02X...%02X%02X%02X%02X')\n", buffer[0], buffer[1], buffer[2], buffer[3], buffer[28], buffer[29], buffer[30], buffer[31], sha256text[0], sha256text[1], sha256text[2], sha256text[3], sha256text[28], sha256text[29], sha256text[30], sha256text[31]);
+    testEndMessage(false, "got '%02X%02X%02X%02X...%02X%02X%02X%02X', expected '%02X%02X%02X%02X...%02X%02X%02X%02X'", buffer[0], buffer[1], buffer[2], buffer[3], buffer[28], buffer[29], buffer[30], buffer[31], sha256text[0], sha256text[1], sha256text[2], sha256text[3], sha256text[28], sha256text[29], sha256text[30], sha256text[31]);
     ret = 1;
   }
 
   return (ret);
+}
+
+
+//
+// 'do_pdfa_tests()' - Run PDF/A generation and compliance tests.
+//
+
+static int				// O - 0 on success, 1 on error
+do_pdfa_tests(void)
+{
+  int		status = 0;		// Overall status
+  pdfio_file_t	*pdf;			// PDF file for encryption test
+  bool		error = false;		// Error flag
+
+
+  // Test creation of files using various PDF/A standards
+  status |= write_pdfa_file("testpdfio-pdfa-1a.pdf", "PDF/A-1a");
+  status |= write_pdfa_file("testpdfio-pdfa-1b.pdf", "PDF/A-1b");
+  status |= write_pdfa_file("testpdfio-pdfa-2a.pdf", "PDF/A-2a");
+  status |= write_pdfa_file("testpdfio-pdfa-2b.pdf", "PDF/A-2b");
+  status |= write_pdfa_file("testpdfio-pdfa-2u.pdf", "PDF/A-2u");
+  status |= write_pdfa_file("testpdfio-pdfa-3a.pdf", "PDF/A-3a");
+  status |= write_pdfa_file("testpdfio-pdfa-3b.pdf", "PDF/A-3b");
+  status |= write_pdfa_file("testpdfio-pdfa-3u.pdf", "PDF/A-3u");
+  status |= write_pdfa_file("testpdfio-pdfa-4.pdf", "PDF/A-4");
+
+  // Test that encryption is not allowed for PDF/A files
+  testBegin("pdfioFileCreate(testpdfio-pdfa-rc4.pdf)");
+  if ((pdf = pdfioFileCreate("testpdfio-pdfa-rc4.pdf", "PDF/A-1b", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) == NULL)
+  {
+    testEnd(false);
+    return (1);
+  }
+
+  testEnd(true);
+
+  testBegin("pdfioFileSetPermissions(PDFIO_ENCRYPTION_RC4_128)");
+  if (pdfioFileSetPermissions(pdf, PDFIO_PERMISSION_ALL, PDFIO_ENCRYPTION_RC4_128, "owner", "user"))
+  {
+    testEndMessage(false, "incorrectly allowed encryption");
+    status = 1;
+  }
+  else
+  {
+    testEndMessage(true, "correctly prevented encryption");
+  }
+
+  pdfioFileClose(pdf);
+
+  return (status);
 }
 
 
@@ -377,12 +438,15 @@ do_crypto_tests(void)
 
 static int				// O - Exit status
 do_test_file(const char *filename,	// I - PDF filename
+             const char *outfile,	// I - Output filename, if any
              int        objnum,		// I - Object number to dump, if any
              const char *password,	// I - Password for file
              bool       verbose)	// I - Be verbose?
 {
+  int		status = 0;		// Exit status
   bool		error = false;		// Have we shown an error yet?
-  pdfio_file_t	*pdf;			// PDF file
+  pdfio_file_t	*pdf,			// PDF file
+		*outpdf;		// Output PDF file, if any
   size_t	n,			// Object/page index
 		num_objs,		// Number of objects
 		num_pages;		// Number of pages
@@ -393,8 +457,10 @@ do_test_file(const char *filename,	// I - PDF filename
   // Try opening the file...
   if (!objnum)
   {
-    printf("%s: ", filename);
-    fflush(stdout);
+    if (outfile)
+      testBegin("%s -> %s", filename, outfile);
+    else
+      testBegin("%s", filename);
   }
 
   if ((pdf = pdfioFileOpen(filename, password_cb, (void *)password, (pdfio_error_cb_t)error_cb, &error)) != NULL)
@@ -409,6 +475,7 @@ do_test_file(const char *filename,	// I - PDF filename
       if ((obj = pdfioFileFindObj(pdf, (size_t)objnum)) == NULL)
       {
         puts("Not found.");
+        pdfioFileClose(pdf);
         return (1);
       }
 
@@ -416,6 +483,7 @@ do_test_file(const char *filename,	// I - PDF filename
       {
         _pdfioValueDebug(&obj->value, stdout);
 	putchar('\n');
+        pdfioFileClose(pdf);
         return (0);
       }
 
@@ -425,6 +493,7 @@ do_test_file(const char *filename,	// I - PDF filename
       {
         _pdfioValueDebug(&obj->value, stdout);
 	putchar('\n');
+        pdfioFileClose(pdf);
         return (0);
       }
 
@@ -432,63 +501,88 @@ do_test_file(const char *filename,	// I - PDF filename
         fwrite(buffer, 1, (size_t)bytes, stdout);
 
       pdfioStreamClose(st);
+      pdfioFileClose(pdf);
 
       return (0);
     }
     else
     {
-      puts("PASS");
+      testEnd(true);
 
-      // Show basic stats...
-      num_objs  = pdfioFileGetNumObjs(pdf);
-      num_pages = pdfioFileGetNumPages(pdf);
-
-      printf("    PDF %s, %d pages, %d objects.\n", pdfioFileGetVersion(pdf), (int)num_pages, (int)num_objs);
-
-      if (verbose)
+      if (outfile)
       {
-	// Show a summary of each page...
-	for (n = 0; n < num_pages; n ++)
-	{
-	  if ((obj = pdfioFileGetPage(pdf, n)) == NULL)
-	  {
-	    printf("%s: Unable to get page #%d.\n", filename, (int)n + 1);
-	  }
-	  else
-	  {
-	    pdfio_rect_t media_box;	// MediaBox value
-
-	    memset(&media_box, 0, sizeof(media_box));
-	    dict = pdfioObjGetDict(obj);
-
-	    if (!pdfioDictGetRect(dict, "MediaBox", &media_box))
+        // Copy pages to the output file...
+        if ((outpdf = pdfioFileCreate(outfile, pdfioFileGetVersion(pdf), /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+        {
+          for (n = 0, num_pages = pdfioFileGetNumPages(pdf); n < num_pages; n ++)
+          {
+	    if (!pdfioPageCopy(outpdf, pdfioFileGetPage(pdf, n)))
 	    {
-	      if ((obj = pdfioDictGetObj(dict, "Parent")) != NULL)
-	      {
-		dict = pdfioObjGetDict(obj);
-		pdfioDictGetRect(dict, "MediaBox", &media_box);
-	      }
+	      status = 1;
+	      break;
 	    }
+          }
 
-	    printf("    Page #%d (obj %d) is %gx%g.\n", (int)n + 1, (int)pdfioObjGetNumber(obj), media_box.x2, media_box.y2);
-	  }
-	}
+          pdfioFileClose(outpdf);
+        }
+      }
+      else
+      {
+	// Show basic stats...
+	num_objs  = pdfioFileGetNumObjs(pdf);
+	num_pages = pdfioFileGetNumPages(pdf);
 
-	// Show the associated value with each object...
-	for (n = 0; n < num_objs; n ++)
+	printf("    PDF %s, %d pages, %d objects.\n", pdfioFileGetVersion(pdf), (int)num_pages, (int)num_objs);
+
+	if (verbose)
 	{
-	  if ((obj = pdfioFileGetObj(pdf, n)) == NULL)
+	  // Show a summary of each page...
+	  for (n = 0; n < num_pages; n ++)
 	  {
-	    printf("    Unable to get object #%d.\n", (int)n);
-	  }
-	  else
-	  {
-	    dict = pdfioObjGetDict(obj);
+	    if ((obj = pdfioFileGetPage(pdf, n)) == NULL)
+	    {
+	      printf("%s: Unable to get page #%d.\n", filename, (int)n + 1);
+	    }
+	    else
+	    {
+	      pdfio_rect_t media_box;	// MediaBox value
 
-	    printf("    %u %u obj dict=%p(%lu pairs)\n", (unsigned)pdfioObjGetNumber(obj), (unsigned)pdfioObjGetGeneration(obj), dict, dict ? (unsigned long)dict->num_pairs : 0UL);
-	    fputs("        ", stdout);
-	    _pdfioValueDebug(&obj->value, stdout);
-	    putchar('\n');
+	      memset(&media_box, 0, sizeof(media_box));
+	      dict = pdfioObjGetDict(obj);
+
+	      if (!pdfioDictGetRect(dict, "MediaBox", &media_box))
+	      {
+	        pdfio_obj_t *parent;	// Parent object
+
+		while ((parent = pdfioDictGetObj(dict, "Parent")) != NULL)
+		{
+		  dict = pdfioObjGetDict(parent);
+		  if (pdfioDictGetRect(dict, "MediaBox", &media_box))
+		    break;
+		}
+	      }
+
+	      printf("    Page #%d (obj %d) is %gx%g.\n", (int)n + 1, (int)pdfioObjGetNumber(obj), media_box.x2, media_box.y2);
+	    }
+	  }
+
+	  // Show the associated value with each object...
+	  for (n = 0; n < num_objs; n ++)
+	  {
+	    if ((obj = pdfioFileGetObj(pdf, n)) == NULL)
+	    {
+	      printf("    Unable to get object #%d.\n", (int)n);
+	      status = 1;
+	    }
+	    else
+	    {
+	      dict = pdfioObjGetDict(obj);
+
+	      printf("    %u %u obj dict=%p(%lu pairs)\n", (unsigned)pdfioObjGetNumber(obj), (unsigned)pdfioObjGetGeneration(obj), (void *)dict, dict ? (unsigned long)dict->num_pairs : 0UL);
+	      fputs("        ", stdout);
+	      _pdfioValueDebug(&obj->value, stdout);
+	      putchar('\n');
+	    }
 	  }
 	}
       }
@@ -496,11 +590,14 @@ do_test_file(const char *filename,	// I - PDF filename
 
     // Close the file and return success...
     pdfioFileClose(pdf);
-    return (0);
+    return (status);
   }
   else
   {
     // Error message will already be displayed so just indicate failure...
+    if (!objnum)
+      testEnd(false);
+
     return (1);
   }
 }
@@ -978,73 +1075,76 @@ do_unit_tests(void)
   setbuf(stdout, NULL);
 
   // First open the test PDF file...
-  fputs("pdfioFileOpen(\"testfiles/testpdfio.pdf\"): ", stdout);
+  testBegin("pdfioFileOpen(\"testfiles/testpdfio.pdf\")");
   if ((inpdf = pdfioFileOpen("testfiles/testpdfio.pdf", /*password_cb*/NULL, /*password_data*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   // TODO: Test for known values in this test file.
 
   // Test dictionary APIs
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(inpdf)) != NULL)
   {
-    puts("PASS");
+    testEnd(true);
 
-    fputs("pdfioDictSet*: ", stdout);
+    testBegin("pdfioDictSet*");
     if (pdfioDictSetBoolean(dict, "Boolean", true) && pdfioDictSetName(dict, "Name", "Name") && pdfioDictSetNumber(dict, "Number", 42.0) && pdfioDictSetString(dict, "String", "String"))
     {
-      puts("PASS");
+      testEnd(true);
     }
     else
     {
-      puts("FAIL");
+      testEnd(false);
       return (1);
     }
 
-    fputs("pdfioDictIterateKeys: ", stdout);
+    testBegin("pdfioDictIterateKeys");
     pdfioDictIterateKeys(dict, iterate_cb, &count);
     if (count == 4)
     {
-      puts("PASS");
+      testEnd(true);
     }
     else
     {
-      printf("FAIL (got %d, expected 4)\n", count);
+      testEndMessage(false, "got %d, expected 4", count);
       return (1);
     }
   }
   else
   {
-    puts("FAIL");
+    testEnd(false);
     return (1);
   }
 
   // Test the value parsers for edge cases...
-  fputs("_pdfioValueRead(complex_dict): ", stdout);
+  testBegin("_pdfioValueRead(complex_dict)");
   s = complex_dict;
   _pdfioTokenInit(&tb, inpdf, (_pdfio_tconsume_cb_t)token_consume_cb, (_pdfio_tpeek_cb_t)token_peek_cb, (void *)&s);
   if (_pdfioValueRead(inpdf, NULL, &tb, &value, 0))
   {
     // TODO: Check value...
-    fputs("PASS: ", stdout);
+    testEnd(true);
     _pdfioValueDebug(&value, stdout);
-    puts("\n");
   }
   else
     goto fail;
 
   // Test the value parsers for edge cases...
-  fputs("_pdfioValueRead(cid_dict): ", stdout);
+  testBegin("_pdfioValueRead(cid_dict)");
   s = cid_dict;
   _pdfioTokenInit(&tb, inpdf, (_pdfio_tconsume_cb_t)token_consume_cb, (_pdfio_tpeek_cb_t)token_peek_cb, (void *)&s);
   if (_pdfioValueRead(inpdf, NULL, &tb, &value, 0))
   {
     // TODO: Check value...
-    fputs("PASS: ", stdout);
+    testEnd(true);
     _pdfioValueDebug(&value, stdout);
-    puts("\n");
   }
   else
     goto fail;
@@ -1054,9 +1154,9 @@ do_unit_tests(void)
     return (1);
 
   // Create a new PDF file...
-  fputs("pdfioFileCreate(\"testpdfio-out.pdf\", ...): ", stdout);
-  if ((outpdf = pdfioFileCreate("testpdfio-out.pdf", NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  testBegin("pdfioFileCreate(\"testpdfio-out.pdf\", ...)");
+  if ((outpdf = pdfioFileCreate("testpdfio-out.pdf", /*version*/"1.7", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+    testEnd(true);
   else
     goto fail;
 
@@ -1073,9 +1173,9 @@ do_unit_tests(void)
     goto fail;
   }
 
-  fputs("pdfioFileCreateOutput(...): ", stdout);
-  if ((outpdf = pdfioFileCreateOutput((pdfio_output_cb_t)output_cb, &outfd, NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  testBegin("pdfioFileCreateOutput(...)");
+  if ((outpdf = pdfioFileCreateOutput((pdfio_output_cb_t)output_cb, &outfd, /*version*/"1.7", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+    testEnd(true);
   else
     goto fail;
 
@@ -1088,17 +1188,27 @@ do_unit_tests(void)
     goto fail;
 
   // Create new encrypted PDF files...
-  fputs("pdfioFileCreate(\"testpdfio-rc4.pdf\", ...): ", stdout);
-  if ((outpdf = pdfioFileCreate("testpdfio-rc4.pdf", NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  testBegin("pdfioFileCreate(\"testpdfio-rc4.pdf\", ...)");
+  if ((outpdf = pdfioFileCreate("testpdfio-rc4.pdf", /*version*/"2.0", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileSetPermissions(all, RC4-128, no passwords): ", stdout);
+  testBegin("pdfioFileSetPermissions(all, RC4-128, no passwords)");
   if (pdfioFileSetPermissions(outpdf, PDFIO_PERMISSION_ALL, PDFIO_ENCRYPTION_RC4_128, NULL, NULL))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_unit_file(inpdf, "testpdfio-rc4.pdf", outpdf, &num_pages, &first_image))
     return (1);
@@ -1107,17 +1217,27 @@ do_unit_tests(void)
     return (1);
 
   // Create new encrypted PDF files...
-  fputs("pdfioFileCreate(\"testpdfio-rc4p.pdf\", ...): ", stdout);
-  if ((outpdf = pdfioFileCreate("testpdfio-rc4p.pdf", NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  testBegin("pdfioFileCreate(\"testpdfio-rc4p.pdf\", ...)");
+  if ((outpdf = pdfioFileCreate("testpdfio-rc4p.pdf", /*version*/"1.7", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileSetPermissions(no-print, RC4-128, passwords='owner' and 'user'): ", stdout);
+  testBegin("pdfioFileSetPermissions(no-print, RC4-128, passwords='owner' and 'user')");
   if (pdfioFileSetPermissions(outpdf, PDFIO_PERMISSION_ALL ^ PDFIO_PERMISSION_PRINT, PDFIO_ENCRYPTION_RC4_128, "owner", "user"))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_unit_file(inpdf, "testpdfio-rc4p.pdf", outpdf, &num_pages, &first_image))
     return (1);
@@ -1125,17 +1245,27 @@ do_unit_tests(void)
   if (read_unit_file("testpdfio-rc4p.pdf", num_pages, first_image, false))
     return (1);
 
-  fputs("pdfioFileCreate(\"testpdfio-aes.pdf\", ...): ", stdout);
-  if ((outpdf = pdfioFileCreate("testpdfio-aes.pdf", NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  testBegin("pdfioFileCreate(\"testpdfio-aes.pdf\", ...)");
+  if ((outpdf = pdfioFileCreate("testpdfio-aes.pdf", /*version*/"2.0", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileSetPermissions(all, AES-128, no passwords): ", stdout);
+  testBegin("pdfioFileSetPermissions(all, AES-128, no passwords)");
   if (pdfioFileSetPermissions(outpdf, PDFIO_PERMISSION_ALL, PDFIO_ENCRYPTION_AES_128, NULL, NULL))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_unit_file(inpdf, "testpdfio-aes.pdf", outpdf, &num_pages, &first_image))
     return (1);
@@ -1143,17 +1273,27 @@ do_unit_tests(void)
   if (read_unit_file("testpdfio-aes.pdf", num_pages, first_image, false))
     return (1);
 
-  fputs("pdfioFileCreate(\"testpdfio-aesp.pdf\", ...): ", stdout);
-  if ((outpdf = pdfioFileCreate("testpdfio-aesp.pdf", NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
+  testBegin("pdfioFileCreate(\"testpdfio-aesp.pdf\", ...)");
+  if ((outpdf = pdfioFileCreate("testpdfio-aesp.pdf", /*version*/"2.0", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileSetPermissions(no-print, AES-128, passwords='owner' and 'user'): ", stdout);
+  testBegin("pdfioFileSetPermissions(no-print, AES-128, passwords='owner' and 'user')");
   if (pdfioFileSetPermissions(outpdf, PDFIO_PERMISSION_ALL ^ PDFIO_PERMISSION_PRINT, PDFIO_ENCRYPTION_AES_128, "owner", "user"))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_unit_file(inpdf, "testpdfio-aesp.pdf", outpdf, &num_pages, &first_image))
     return (1);
@@ -1161,11 +1301,16 @@ do_unit_tests(void)
   if (read_unit_file("testpdfio-aesp.pdf", num_pages, first_image, false))
     return (1);
 
-  fputs("pdfioFileCreateTemporary: ", stdout);
-  if ((outpdf = pdfioFileCreateTemporary(temppdf, sizeof(temppdf), NULL, NULL, NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    printf("PASS (%s)\n", temppdf);
+  testBegin("pdfioFileCreateTemporary");
+  if ((outpdf = pdfioFileCreateTemporary(temppdf, sizeof(temppdf), /*version*/"2.0", /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) != NULL)
+  {
+    testEndMessage(true, "%s", temppdf);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_unit_file(inpdf, "<temporary>", outpdf, &num_pages, &first_image))
     return (1);
@@ -1174,6 +1319,10 @@ do_unit_tests(void)
     return (1);
 
   pdfioFileClose(inpdf);
+
+  // Do PDF/A tests...
+  if (do_pdfa_tests())
+    return (1);
 
   return (0);
 
@@ -1198,41 +1347,71 @@ draw_image(pdfio_stream_t *st,
            double         h,		// I - Image height
            const char     *label)	// I - Label
 {
-  printf("pdfioContentDrawImage(name=\"%s\", x=%g, y=%g, w=%g, h=%g): ", name, x, y, w, h);
+  testBegin("pdfioContentDrawImage(name=\"%s\", x=%g, y=%g, w=%g, h=%g)", name, x, y, w, h);
   if (pdfioContentDrawImage(st, name, x, y, w, h))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentTextBegin(): ", stdout);
+  testBegin("pdfioContentTextBegin()");
   if (pdfioContentTextBegin(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentSetTextFont(\"F1\", 18.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F1\", 18.0)");
   if (pdfioContentSetTextFont(st, "F1", 18.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioContentTextMoveTo(%g, %g): ", x, y + h + 9);
+  testBegin("pdfioContentTextMoveTo(%g, %g)", x, y + h + 9);
   if (pdfioContentTextMoveTo(st, x, y + h + 9))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioContentTextShow(\"%s\"): ", label);
+  testBegin("pdfioContentTextShow(\"%s\")", label);
   if (pdfioContentTextShow(st, false, label))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentTextEnd(): ", stdout);
+  testBegin("pdfioContentTextEnd()");
   if (pdfioContentTextEnd(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 }
@@ -1249,19 +1428,12 @@ error_cb(pdfio_file_t *pdf,		// I  - PDF file
 {
   (void)pdf;
 
-  if (!*error)
-  {
-    // First error, so show a "FAIL" indicator
-    *error = true;
+  *error = true;
 
-    puts("FAIL");
-  }
-
-  // Indent error messages...
-  printf("    %s\n", message);
+  testMessage("%s", message);
 
   // Continue to catch more errors...
-  return (false);
+  return (true);
 }
 
 
@@ -1331,179 +1503,204 @@ read_unit_file(const char *filename,	// I - File to read
 
 
   // Open the new PDF file to read it...
-  printf("pdfioFileOpen(\"%s\", ...): ", filename);
+  testBegin("pdfioFileOpen(\"%s\", ...)", filename);
   if ((pdf = pdfioFileOpen(filename, password_cb, (void *)"user", (pdfio_error_cb_t)error_cb, &error)) != NULL)
-    puts("PASS");
-  else
-    return (1);
-
-  // Get the root object/catalog dictionary
-  fputs("pdfioFileGetCatalog: ", stdout);
-  if ((catalog = pdfioFileGetCatalog(pdf)) != NULL)
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    puts("FAIL (got NULL, expected dictionary)");
+    testEnd(false);
+    return (1);
+  }
+
+  // Get the root object/catalog dictionary
+  testBegin("pdfioFileGetCatalog");
+  if ((catalog = pdfioFileGetCatalog(pdf)) != NULL)
+  {
+    testEnd(true);
+  }
+  else
+  {
+    testEndMessage(false, "got NULL, expected dictionary");
     return (1);
   }
 
   // Verify some catalog values...
-  fputs("pdfioDictGetName(PageLayout): ", stdout);
+  testBegin("pdfioDictGetName(PageLayout)");
   if ((s = pdfioDictGetName(catalog, "PageLayout")) != NULL && !strcmp(s, "SinglePage"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'SinglePage')\n", s);
+    testEndMessage(false, "got '%s', expected 'SinglePage'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'SinglePage')");
+    testEndMessage(false, "got NULL, expected 'SinglePage'");
     return (1);
   }
 
-  fputs("pdfioDictGetName(PageLayout): ", stdout);
+  testBegin("pdfioDictGetName(PageLayout)");
   if ((s = pdfioDictGetName(catalog, "PageLayout")) != NULL && !strcmp(s, "SinglePage"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'SinglePage')\n", s);
+    testEndMessage(false, "got '%s', expected 'SinglePage'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'SinglePage')");
+    testEndMessage(false, "got NULL, expected 'SinglePage'");
     return (1);
   }
 
-  fputs("pdfioDictGetName(PageMode): ", stdout);
+  testBegin("pdfioDictGetName(PageMode)");
   if ((s = pdfioDictGetName(catalog, "PageMode")) != NULL && !strcmp(s, "UseThumbs"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'UseThumbs')\n", s);
+    testEndMessage(false, "got '%s', expected 'UseThumbs'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'UseThumbs')");
+    testEndMessage(false, "got NULL, expected 'UseThumbs'");
     return (1);
   }
 
-  fputs("pdfioDictGetString(Lang): ", stdout);
-  if ((s = pdfioDictGetString(catalog, "Lang")) != NULL && !strcmp(s, "en"))
+  testBegin("pdfioDictGetString(Lang)");
+  if ((s = pdfioDictGetString(catalog, "Lang")) != NULL && !strcmp(s, "en-CA"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'en')\n", s);
+    testEndMessage(false, "got '%s', expected 'en-CA'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'en')");
+    testEndMessage(false, "got NULL, expected 'en-CA'");
     return (1);
   }
 
   // Verify metadata...
-  fputs("pdfioFileGetAuthor: ", stdout);
+  testBegin("pdfioFileGetAuthor");
   if ((s = pdfioFileGetAuthor(pdf)) != NULL && !strcmp(s, "Michael R Sweet"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'Michael R Sweet')\n", s);
+    testEndMessage(false, "got '%s', expected 'Michael R Sweet'", s);
+    return (1);
+  }
+  else if (strcmp(pdfioFileGetVersion(pdf), "2.0"))
+  {
+    testEndMessage(false, "got NULL, expected 'Michael R Sweet'");
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'Michael R Sweet')");
-    return (1);
+    testEnd(true);
   }
 
-  fputs("pdfioFileGetCreator: ", stdout);
+  testBegin("pdfioFileGetCreator");
   if ((s = pdfioFileGetCreator(pdf)) != NULL && !strcmp(s, "testpdfio"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'testpdfio')\n", s);
+    testEndMessage(false, "got '%s', expected 'testpdfio'", s);
+    return (1);
+  }
+  else if (strcmp(pdfioFileGetVersion(pdf), "2.0"))
+  {
+    testEndMessage(false, "got NULL, expected 'testpdfio'");
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'testpdfio')");
-    return (1);
+    testEnd(true);
   }
 
-  fputs("pdfioFileGetKeywords: ", stdout);
+  testBegin("pdfioFileGetKeywords");
   if ((s = pdfioFileGetKeywords(pdf)) != NULL && !strcmp(s, "one fish,two fish,red fish,blue fish"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'one fish,two fish,red fish,blue fish')\n", s);
+    testEndMessage(false, "got '%s', expected 'one fish,two fish,red fish,blue fish'", s);
+    return (1);
+  }
+  else if (strcmp(pdfioFileGetVersion(pdf), "2.0"))
+  {
+    testEndMessage(false, "got NULL, expected 'one fish,two fish,red fish,blue fish'");
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'one fish,two fish,red fish,blue fish')");
-    return (1);
+    testEnd(true);
   }
 
-  fputs("pdfioFileGetSubject: ", stdout);
+  testBegin("pdfioFileGetSubject");
   if ((s = pdfioFileGetSubject(pdf)) != NULL && !strcmp(s, "Unit test document"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'Unit test document')\n", s);
+    testEndMessage(false, "got '%s', expected 'Unit test document'", s);
+    return (1);
+  }
+  else if (strcmp(pdfioFileGetVersion(pdf), "2.0"))
+  {
+    testEndMessage(false, "got NULL, expected 'Unit test document'");
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'Unit test document')");
-    return (1);
+    testEnd(true);
   }
 
-  fputs("pdfioFileGetTitle: ", stdout);
+  testBegin("pdfioFileGetTitle");
   if ((s = pdfioFileGetTitle(pdf)) != NULL && !strcmp(s, "Test Document"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'Test Document')\n", s);
+    testEndMessage(false, "got '%s', expected 'Test Document'", s);
+    return (1);
+  }
+  else if (strcmp(pdfioFileGetVersion(pdf), "2.0"))
+  {
+    testEndMessage(false, "got NULL, expected 'Test Document'");
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'Test Document')");
-    return (1);
+    testEnd(true);
   }
 
   // Verify the number of pages is the same...
-  fputs("pdfioFileGetNumPages: ", stdout);
+  testBegin("pdfioFileGetNumPages");
   if (num_pages == pdfioFileGetNumPages(pdf))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (%lu != %lu)\n", (unsigned long)num_pages, (unsigned long)pdfioFileGetNumPages(pdf));
+    testEndMessage(false, "%lu != %lu", (unsigned long)num_pages, (unsigned long)pdfioFileGetNumPages(pdf));
     return (1);
   }
 
@@ -1520,11 +1717,16 @@ read_unit_file(const char *filename,	// I - File to read
   }
 
   // Close the new PDF file...
-  fputs("pdfioFileClose(\"testpdfio-out.pdf\"): ", stdout);
+  testBegin("pdfioFileClose(\"testpdfio-out.pdf\")");
   if (pdfioFileClose(pdf))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 }
@@ -1582,7 +1784,7 @@ token_peek_cb(const char **s,		// IO - Test string
 static int				// O - Exit status
 usage(FILE *fp)				// I - Output file
 {
-  fputs("Usage: ./testpdfio [OPTIONS] [FILENAME [OBJNUM]] ...\n", fp);
+  fputs("Usage: ./testpdfio [OPTIONS] [FILENAME {OBJECT-NUM,OUT-FILENAME}] ...\n", fp);
   fputs("Options:\n", fp);
   fputs("  --help               Show program help.\n", fp);
   fputs("  --password PASSWORD  Set PDF password.\n", fp);
@@ -1613,62 +1815,74 @@ verify_image(pdfio_file_t *pdf,		// I - PDF file
   ssize_t	bytes;			// Bytes read from stream
 
 
-  printf("pdfioFileFindObj(%lu): ", (unsigned long)number);
+  testBegin("pdfioFileFindObj(%lu)", (unsigned long)number);
   if ((obj = pdfioFileFindObj(pdf, number)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioObjGetType: ", stdout);
+  testBegin("pdfioObjGetType");
   if ((type = pdfioObjGetType(obj)) != NULL && !strcmp(type, "XObject"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (got %s, expected XObject)\n", type);
+    testEndMessage(false, "got %s, expected XObject", type);
     return (1);
   }
 
-  fputs("pdfioObjGetSubtype: ", stdout);
+  testBegin("pdfioObjGetSubtype");
   if ((subtype = pdfioObjGetSubtype(obj)) != NULL && !strcmp(subtype, "Image"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (got %s, expected Image)\n", subtype);
+    testEndMessage(false, "got %s, expected Image", subtype);
     return (1);
   }
 
-  fputs("pdfioImageGetWidth: ", stdout);
+  testBegin("pdfioImageGetWidth");
   if ((width = pdfioImageGetWidth(obj)) == 256.0)
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (got %g, expected 256)\n", width);
+    testEndMessage(false, "got %g, expected 256", width);
     return (1);
   }
 
-  fputs("pdfioImageGetHeight: ", stdout);
+  testBegin("pdfioImageGetHeight");
   if ((height = pdfioImageGetHeight(obj)) == 256.0)
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    printf("FAIL (got %g, expected 256)\n", height);
+    testEndMessage(false, "got %g, expected 256", height);
     return (1);
   }
 
   // Open the image stream, read the image, and verify it matches expectations...
-  fputs("pdfioObjOpenStream: ", stdout);
+  testBegin("pdfioObjOpenStream");
   if ((st = pdfioObjOpenStream(obj, PDFIO_FILTER_FLATE)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
+
+  testBegin("pdfioStreamRead");
 
   for (y = 0; y < 256; y ++)
   {
@@ -1681,20 +1895,22 @@ verify_image(pdfio_file_t *pdf,		// I - PDF file
 
     if ((bytes = pdfioStreamRead(st, line, sizeof(line))) != (ssize_t)sizeof(line))
     {
-      printf("pdfioStreamRead: FAIL (got %d for line %d, expected 768)\n", y, (int)bytes);
+      testEndMessage(false, "got %d for line %d, expected 768", y, (int)bytes);
       pdfioStreamClose(st);
       return (1);
     }
 
     if (memcmp(buffer, line, sizeof(buffer)))
     {
-      printf("pdfioStreamRead: FAIL (line %d doesn't match expectations)\n", y);
+      testEndMessage(false, "line %d doesn't match expectations", y);
       pdfioStreamClose(st);
       return (1);
     }
   }
 
   pdfioStreamClose(st);
+
+  testEnd(true);
 
   return (0);
 }
@@ -1806,47 +2022,62 @@ write_alpha_test(
     }
 
     // Write the image...
-    printf("pdfioFileCreateImageObjFromData(num_colors=%u, alpha=%s): ", (unsigned)num_colors, i > 2 ? "true" : "false");
+    testBegin("pdfioFileCreateImageObjFromData(num_colors=%u, alpha=%s)", (unsigned)num_colors, i > 2 ? "true" : "false");
     if ((images[i] = pdfioFileCreateImageObjFromData(pdf, buffer, 256, 256, num_colors, NULL, i > 2, false)) != NULL)
     {
-      printf("PASS (%u)\n", (unsigned)pdfioObjGetNumber(images[i]));
+      testEndMessage(true, "%u", (unsigned)pdfioObjGetNumber(images[i]));
     }
     else
     {
-      puts("FAIL");
+      testEnd(false);
       return (1);
     }
   }
 
   // Create the page dictionary, object, and stream...
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   for (i = 0; i < 6; i ++)
   {
-    printf("pdfioPageDictAddImage(%d): ", i + 1);
+    testBegin("pdfioPageDictAddImage(%d)", i + 1);
     snprintf(iname, sizeof(iname), "IM%d", i + 1);
     if (pdfioPageDictAddImage(dict, pdfioStringCreate(pdf, iname), images[i]))
-      puts("PASS");
+      testEnd(true);
     else
       return (1);
   }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number);
+  testBegin("pdfioFileCreatePage(%d)", number);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_header_footer(st, "Image Writing Test", number))
     goto error;
@@ -1870,11 +2101,16 @@ write_alpha_test(
   }
 
   // Wrap up...
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 
@@ -1987,33 +2223,53 @@ write_color_patch(pdfio_stream_t *st,	// I - Content stream
         magenta -= black;
         yellow  -= black;
 
-	printf("pdfioContentSetFillColorDeviceCMYK(c=%g, m=%g, y=%g, k=%g): ", cyan, magenta, yellow, black);
+	testBegin("pdfioContentSetFillColorDeviceCMYK(c=%g, m=%g, y=%g, k=%g)", cyan, magenta, yellow, black);
 	if (pdfioContentSetFillColorDeviceCMYK(st, cyan, magenta, yellow, black))
-	  puts("PASS");
+	{
+	  testEnd(true);
+	}
 	else
+	{
+	  testEnd(false);
 	  return (1);
+	}
       }
       else
       {
         // Use calibrate RGB space...
-	printf("pdfioContentSetFillColorRGB(r=%g, g=%g, b=%g): ", red, green, blue);
+	testBegin("pdfioContentSetFillColorRGB(r=%g, g=%g, b=%g)", red, green, blue);
 	if (pdfioContentSetFillColorRGB(st, red, green, blue))
-	  puts("PASS");
+	{
+	  testEnd(true);
+	}
 	else
+	{
+	  testEnd(false);
 	  return (1);
+	}
       }
 
-      printf("pdfioContentPathRect(x=%g, y=%g, w=%g, h=%g): ", col * 6.0, row * 6.0, 6.0, 6.0);
+      testBegin("pdfioContentPathRect(x=%g, y=%g, w=%g, h=%g)", col * 6.0, row * 6.0, 6.0, 6.0);
       if (pdfioContentPathRect(st, col * 6.0, row * 6.0, 6.0, 6.0))
-	puts("PASS");
+      {
+	testEnd(true);
+      }
       else
+      {
+	testEnd(false);
 	return (1);
+      }
 
-      fputs("pdfioContentFill(even_odd=false): ", stdout);
+      testBegin("pdfioContentFill(even_odd=false)");
       if (pdfioContentFill(st, false))
-	puts("PASS");
+      {
+	testEnd(true);
+      }
       else
+      {
+	testEnd(false);
 	return (1);
+      }
     }
   }
 
@@ -2036,294 +2292,359 @@ write_color_test(pdfio_file_t *pdf,	// I - PDF file
   pdfio_obj_t		*prophoto;	// ProPhotoRGB ICC profile object
 
 
-  fputs("pdfioFileCreateICCObjFromFile(ProPhotoRGB): ", stdout);
+  testBegin("pdfioFileCreateICCObjFromFile(ProPhotoRGB)");
   if ((prophoto = pdfioFileCreateICCObjFromFile(pdf, "testfiles/iso22028-2-romm-rgb.icc", 3)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioArrayCreateColorFromStandard(AdobeRGB): ", stdout);
+  testBegin("pdfioArrayCreateColorFromStandard(AdobeRGB)");
   if ((cs = pdfioArrayCreateColorFromStandard(pdf, 3, PDFIO_CS_ADOBE)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddColorSpace(AdobeRGB): ", stdout);
+  testBegin("pdfioPageDictAddColorSpace(AdobeRGB)");
   if (pdfioPageDictAddColorSpace(dict, "AdobeRGB", cs))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioArrayCreateColorFromStandard(DisplayP3): ", stdout);
+  testBegin("pdfioArrayCreateColorFromStandard(DisplayP3)");
   if ((cs = pdfioArrayCreateColorFromStandard(pdf, 3, PDFIO_CS_P3_D65)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddColorSpace(DisplayP3): ", stdout);
+  testBegin("pdfioPageDictAddColorSpace(DisplayP3)");
   if (pdfioPageDictAddColorSpace(dict, "DisplayP3", cs))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioArrayCreateColorFromICCObj(ProPhotoRGB): ", stdout);
+  testBegin("pdfioArrayCreateColorFromICCObj(ProPhotoRGB)");
   if ((cs = pdfioArrayCreateColorFromICCObj(pdf, prophoto)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddColorSpace(ProPhotoRGB): ", stdout);
+  testBegin("pdfioPageDictAddColorSpace(ProPhotoRGB)");
   if (pdfioPageDictAddColorSpace(dict, "ProPhotoRGB", cs))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioArrayCreateColorFromStandard(sRGB): ", stdout);
+  testBegin("pdfioArrayCreateColorFromStandard(sRGB)");
   if ((cs = pdfioArrayCreateColorFromStandard(pdf, 3, PDFIO_CS_SRGB)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddColorSpace(sRGB): ", stdout);
+  testBegin("pdfioPageDictAddColorSpace(sRGB)");
   if (pdfioPageDictAddColorSpace(dict, "sRGB", cs))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number);
+  testBegin("pdfioFileCreatePage(%d)", number);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_header_footer(st, "Color Space Test", number))
     goto error;
 
-  fputs("pdfioContentTextBegin(): ", stdout);
+  testBegin("pdfioContentTextBegin()");
   if (pdfioContentTextBegin(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetTextFont(\"F1\", 18.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F1\", 18.0)");
   if (pdfioContentSetTextFont(st, "F1", 18.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(82, 234): ", stdout);
+  testBegin("pdfioContentTextMoveTo(82, 234)");
   if (pdfioContentTextMoveTo(st, 82, 234))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"AdobeRGB\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"AdobeRGB\")");
   if (pdfioContentTextShow(st, false, "AdobeRGB"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(234, 0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(234, 0)");
   if (pdfioContentTextMoveTo(st, 234, 0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"DisplayP3\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"DisplayP3\")");
   if (pdfioContentTextShow(st, false, "DisplayP3"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(-234, 216): ", stdout);
+  testBegin("pdfioContentTextMoveTo(-234, 216)");
   if (pdfioContentTextMoveTo(st, -234, 216))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"sRGB\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"sRGB\")");
   if (pdfioContentTextShow(st, false, "sRGB"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(234, 0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(234, 0)");
   if (pdfioContentTextMoveTo(st, 234, 0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"ProPhotoRGB\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"ProPhotoRGB\")");
   if (pdfioContentTextShow(st, false, "ProPhotoRGB"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(-234, 216): ", stdout);
+  testBegin("pdfioContentTextMoveTo(-234, 216)");
   if (pdfioContentTextMoveTo(st, -234, 216))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"DeviceCMYK\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"DeviceCMYK\")");
   if (pdfioContentTextShow(st, false, "DeviceCMYK"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextEnd(): ", stdout);
+  testBegin("pdfioContentTextEnd()");
   if (pdfioContentTextEnd(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSave(): ", stdout);
+  testBegin("pdfioContentSave()");
   if (pdfioContentSave(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetFillColorSpace(AdobeRGB): ", stdout);
+  testBegin("pdfioContentSetFillColorSpace(AdobeRGB)");
   if (pdfioContentSetFillColorSpace(st, "AdobeRGB"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentMatrixTranslate(82, 90): ", stdout);
+  testBegin("pdfioContentMatrixTranslate(82, 90)");
   if (pdfioContentMatrixTranslate(st, 82, 90))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   if (write_color_patch(st, false))
     goto error;
 
-  fputs("pdfioContentRestore(): ", stdout);
+  testBegin("pdfioContentRestore()");
   if (pdfioContentRestore(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSave(): ", stdout);
+  testBegin("pdfioContentSave()");
   if (pdfioContentSave(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetFillColorSpace(DisplayP3): ", stdout);
+  testBegin("pdfioContentSetFillColorSpace(DisplayP3)");
   if (pdfioContentSetFillColorSpace(st, "DisplayP3"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentMatrixTranslate(316, 90): ", stdout);
+  testBegin("pdfioContentMatrixTranslate(316, 90)");
   if (pdfioContentMatrixTranslate(st, 316, 90))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   if (write_color_patch(st, false))
     goto error;
 
-  fputs("pdfioContentRestore(): ", stdout);
+  testBegin("pdfioContentRestore()");
   if (pdfioContentRestore(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSave(): ", stdout);
+  testBegin("pdfioContentSave()");
   if (pdfioContentSave(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetFillColorSpace(sRGB): ", stdout);
+  testBegin("pdfioContentSetFillColorSpace(sRGB)");
   if (pdfioContentSetFillColorSpace(st, "sRGB"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentMatrixTranslate(82, 306): ", stdout);
+  testBegin("pdfioContentMatrixTranslate(82, 306)");
   if (pdfioContentMatrixTranslate(st, 82, 306))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   if (write_color_patch(st, false))
     goto error;
 
-  fputs("pdfioContentRestore(): ", stdout);
+  testBegin("pdfioContentRestore()");
   if (pdfioContentRestore(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSave(): ", stdout);
+  testBegin("pdfioContentSave()");
   if (pdfioContentSave(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetFillColorSpace(ProPhotoRGB): ", stdout);
+  testBegin("pdfioContentSetFillColorSpace(ProPhotoRGB)");
   if (pdfioContentSetFillColorSpace(st, "ProPhotoRGB"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentMatrixTranslate(316, 306): ", stdout);
+  testBegin("pdfioContentMatrixTranslate(316, 306)");
   if (pdfioContentMatrixTranslate(st, 316, 306))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   if (write_color_patch(st, false))
     goto error;
 
-  fputs("pdfioContentRestore(): ", stdout);
+  testBegin("pdfioContentRestore()");
   if (pdfioContentRestore(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSave(): ", stdout);
+  testBegin("pdfioContentSave()");
   if (pdfioContentSave(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentMatrixTranslate(82, 522): ", stdout);
+  testBegin("pdfioContentMatrixTranslate(82, 522)");
   if (pdfioContentMatrixTranslate(st, 82, 522))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   if (write_color_patch(st, true))
     goto error;
 
-  fputs("pdfioContentRestore(): ", stdout);
+  testBegin("pdfioContentRestore()");
   if (pdfioContentRestore(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 
@@ -2508,36 +2829,61 @@ write_font_test(
   };
 
 
-  printf("pdfioFileCreateFontObjFromFile(%s): ", textfontfile);
+  testBegin("pdfioFileCreateFontObjFromFile(%s)", textfontfile);
   if ((textfont = pdfioFileCreateFontObjFromFile(pdf, textfontfile, unicode)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F2): ", stdout);
+  testBegin("pdfioPageDictAddFont(F2)");
   if (pdfioPageDictAddFont(dict, "F2", textfont))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number);
+  testBegin("pdfioFileCreatePage(%d)", number);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if ((ptr = strrchr(textfontfile, '/')) != NULL)
     strncpy(textname, ptr + 1, sizeof(textname) - 1);
@@ -2556,77 +2902,127 @@ write_font_test(
   if (write_header_footer(st, title, number))
     goto error;
 
-  fputs("pdfioContentTextBegin(): ", stdout);
+  testBegin("pdfioContentTextBegin()");
   if (pdfioContentTextBegin(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentSetTextFont(\"F2\", 10.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F2\", 10.0)");
   if (pdfioContentSetTextFont(st, "F2", 10.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentSetTextLeading(12.0): ", stdout);
+  testBegin("pdfioContentSetTextLeading(12.0)");
   if (pdfioContentSetTextLeading(st, 12.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(198.0, 702.0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(198.0, 702.0)");
   if (pdfioContentTextMoveTo(st, 198.0, 702.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   for (i = 0; i < (int)(sizeof(welcomes) / sizeof(welcomes[0])); i ++)
   {
     if (i > 0 && (i % 50) == 0)
     {
-      fputs("pdfioContentTextMoveTo(162.0, 600.0): ", stdout);
+      testBegin("pdfioContentTextMoveTo(162.0, 600.0)");
       if (pdfioContentTextMoveTo(st, 162.0, 600.0))
-	puts("PASS");
+      {
+	testEnd(true);
+      }
       else
+      {
+	testEnd(false);
 	return (1);
+      }
     }
 
-    printf("pdfioContentTextMeasure(\"%s\"): ", welcomes[i]);
+    testBegin("pdfioContentTextMeasure(\"%s\")", welcomes[i]);
     if ((width = pdfioContentTextMeasure(textfont, welcomes[i], 10.0)) >= 0.0)
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
 
-    printf("pdfioContextTextMoveTo(%g, 0.0): ", -width);
+    testBegin("pdfioContextTextMoveTo(%g, 0.0)", -width);
     if (pdfioContentTextMoveTo(st, -width, 0.0))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
 
-    printf("pdfioContentTextShowf(\"%s\"): ", welcomes[i]);
+    testBegin("pdfioContentTextShowf(\"%s\")", welcomes[i]);
     if (pdfioContentTextShowf(st, unicode, "%s\n", welcomes[i]))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
 
-    printf("pdfioContextTextMoveTo(%g, 0.0): ", width);
+    testBegin("pdfioContextTextMoveTo(%g, 0.0)", width);
     if (pdfioContentTextMoveTo(st, width, 0.0))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
   }
 
-  fputs("pdfioContentTextEnd(): ", stdout);
+  testBegin("pdfioContentTextEnd()");
   if (pdfioContentTextEnd(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 
@@ -2647,59 +3043,104 @@ write_header_footer(
     const char     *title,		// I - Title
     int            number)		// I - Page number
 {
-  fputs("pdfioContentSetFillColorDeviceGray(0.0): ", stdout);
+  testBegin("pdfioContentSetFillColorDeviceGray(0.0)");
   if (pdfioContentSetFillColorDeviceGray(st, 0.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentTextBegin(): ", stdout);
+  testBegin("pdfioContentTextBegin()");
   if (pdfioContentTextBegin(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentSetTextFont(\"F1\", 18.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F1\", 18.0)");
   if (pdfioContentSetTextFont(st, "F1", 18.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentTextMoveTo(36.0, 738.0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(36.0, 738.0)");
   if (pdfioContentTextMoveTo(st, 36.0, 738.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioContentTextShow(\"%s\"): ", title);
+  testBegin("pdfioContentTextShow(\"%s\")", title);
   if (pdfioContentTextShow(st, false, title))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentSetTextFont(\"F1\", 12.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F1\", 12.0)");
   if (pdfioContentSetTextFont(st, "F1", 12.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentTextMoveTo(514.0, -702.0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(514.0, -702.0)");
   if (pdfioContentTextMoveTo(st, 514.0, -702.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioContentTextShowf(\"%d\"): ", number);
+  testBegin("pdfioContentTextShowf(\"%d\")", number);
   if (pdfioContentTextShowf(st, false, "%d", number))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioContentTextEnd(): ", stdout);
+  testBegin("pdfioContentTextEnd()");
   if (pdfioContentTextEnd(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 }
@@ -2797,56 +3238,91 @@ write_images_test(
 
 
   // Create the images...
-  fputs("Create Image (Predictor 1): ", stdout);
+  testBegin("Create Image (Predictor 1)");
   if ((noimage = write_image_object(pdf, _PDFIO_PREDICTOR_NONE)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   for (p = _PDFIO_PREDICTOR_PNG_NONE; p <= _PDFIO_PREDICTOR_PNG_AUTO; p ++)
   {
-    printf("Create Image (Predictor %d): ", p);
+    testBegin("Create Image (Predictor %d)", p);
     if ((pimages[p - _PDFIO_PREDICTOR_PNG_NONE] = write_image_object(pdf, p)) != NULL)
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
   }
 
   // Create the page dictionary, object, and stream...
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddImage(1): ", stdout);
+  testBegin("pdfioPageDictAddImage(1)");
   if (pdfioPageDictAddImage(dict, "IM1", noimage))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   for (p = _PDFIO_PREDICTOR_PNG_NONE; p <= _PDFIO_PREDICTOR_PNG_AUTO; p ++)
   {
-    printf("pdfioPageDictAddImage(%d): ", p);
+    testBegin("pdfioPageDictAddImage(%d)", p);
     snprintf(pname, sizeof(pname), "IM%d", p);
     if (pdfioPageDictAddImage(dict, pdfioStringCreate(pdf, pname), pimages[p - _PDFIO_PREDICTOR_PNG_NONE]))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
   }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number);
+  testBegin("pdfioFileCreatePage(%d)", number);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_header_footer(st, "Image Predictor Test", number))
     goto error;
@@ -2867,11 +3343,16 @@ write_images_test(
   }
 
   // Wrap up...
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 
@@ -2904,44 +3385,64 @@ write_jpeg_test(pdfio_file_t *pdf,	// I - PDF file
 
 
   // Create the page dictionary, object, and stream...
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddImage: ", stdout);
+  testBegin("pdfioPageDictAddImage");
   if (pdfioPageDictAddImage(dict, "IM1", image))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number);
+  testBegin("pdfioFileCreatePage(%d)", number);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_header_footer(st, title, number))
     goto error;
 
   // Calculate the scaled size of the image...
-  fputs("pdfioImageGetWidth(): ", stdout);
+  testBegin("pdfioImageGetWidth()");
   if ((width = pdfioImageGetWidth(image)) > 0.0)
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioImageGetHeight(): ", stdout);
+  testBegin("pdfioImageGetHeight()");
   if ((height = pdfioImageGetHeight(image)) > 0.0)
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
@@ -2957,27 +3458,32 @@ write_jpeg_test(pdfio_file_t *pdf,	// I - PDF file
   ty = 0.5 * (792 - sheight);
 
   // Show "raw" content (a bordered box for the image...)
-  fputs("pdfioStreamPrintf(...): ", stdout);
+  testBegin("pdfioStreamPrintf(...)");
   if (pdfioStreamPrintf(st,
                        "1 0 0 RG 0 g 5 w\n"
                        "%g %g %g %g re %g %g %g %g re B*\n", tx - 36, ty - 36, swidth + 72, sheight + 72, tx - 1, ty - 1, swidth + 2, sheight + 2))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   // Draw the image inside the border box...
-  printf("pdfioContentDrawImage(\"IM1\", x=%g, y=%g, w=%g, h=%g): ", tx, ty, swidth, sheight);
+  testBegin("pdfioContentDrawImage(\"IM1\", x=%g, y=%g, w=%g, h=%g)", tx, ty, swidth, sheight);
   if (pdfioContentDrawImage(st, "IM1", tx, ty, swidth, sheight))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   // Close the page stream/object...
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 
@@ -2985,6 +3491,161 @@ write_jpeg_test(pdfio_file_t *pdf,	// I - PDF file
 
   pdfioStreamClose(st);
   return (1);
+}
+
+
+//
+// 'write_pdfa_file()' - Generate a simple PDF/A file.
+//
+
+static int				// O - Exit status
+write_pdfa_file(
+    const char *filename,		// I - Name of the PDF file to create
+    const char *pdfa_version)		// I - PDF/A version string (e.g., "PDF/A-1b")
+{
+  int		status = 1;		// Exit status
+  pdfio_file_t	*pdf;			// Output PDF file
+  pdfio_obj_t	*font;			// Font object
+  pdfio_obj_t	*color_jpg,		// JPEG file
+		*pdfio_png;		// PNG file with transparency
+  pdfio_dict_t	*page_dict;		// Page dictionary
+  pdfio_stream_t *st;			// Page content stream
+  bool		error = false;		// Error flag
+  double	width,			// Width of image
+		height;			// Height of image
+  double	swidth,			// Scaled width
+		sheight,		// Scaled height
+		tx,			// X offset
+		ty;			// Y offset
+
+
+  testBegin("pdfioFileCreate(%s)", filename);
+
+  if ((pdf = pdfioFileCreate(filename, pdfa_version, /*media_box*/NULL, /*crop_box*/NULL, (pdfio_error_cb_t)error_cb, &error)) == NULL)
+  {
+    testEnd(false);
+    return (1);
+  }
+
+  testEnd(true);
+
+  // Embed a base font, which are not allowed for PDF/A
+  testBegin("pdfioFileCreateFontObjFromBase(Helvetica)");
+  if (pdfioFileCreateFontObjFromBase(pdf, "Helvetica") != NULL)
+  {
+    testEnd(false);
+    goto done;
+  }
+
+  testEnd(true);
+
+  // Embed a font, which is required for PDF/A
+  testBegin("pdfioFileCreateFontObjFromFile(testfiles/OpenSans-Regular.ttf)");
+  if ((font = pdfioFileCreateFontObjFromFile(pdf, "testfiles/OpenSans-Regular.ttf", false)) == NULL)
+  {
+    testEnd(false);
+    goto done;
+  }
+
+  testEnd(true);
+
+  // Try embedding two images, one with alpha and one without...
+  testBegin("pdfioFileCreateImageObjFromFile(testfiles/color.jpg)");
+  if ((color_jpg = pdfioFileCreateImageObjFromFile(pdf, "testfiles/color.jpg", true)) == NULL)
+  {
+    testEnd(false);
+    goto done;
+  }
+
+  testEnd(true);
+
+  testBegin("pdfioFileCreateImageObjFromFile(testfiles/pdfio-rgba.png)");
+  pdfio_png = pdfioFileCreateImageObjFromFile(pdf, "testfiles/pdfio-rgba.png", false);
+
+  if ((pdfio_png != NULL && !strncmp(pdfa_version, "PDF/A-1", 7)) || (pdfio_png == NULL && strncmp(pdfa_version, "PDF/A-1", 7)))
+  {
+    testEnd(false);
+    goto done;
+  }
+
+  testEnd(true);
+
+  if (!pdfio_png)
+  {
+    testBegin("pdfioFileCreateImageObjFromFile(testfiles/pdfio-color.png)");
+    if ((pdfio_png = pdfioFileCreateImageObjFromFile(pdf, "testfiles/pdfio-color.png", false)) == NULL)
+    {
+      testEnd(false);
+      goto done;
+    }
+
+    testEnd(true);
+  }
+
+  // Create a page...
+  page_dict = pdfioDictCreate(pdf);
+  pdfioPageDictAddFont(page_dict, "F1", font);
+  pdfioPageDictAddImage(page_dict, "I1", pdfio_png);
+  pdfioPageDictAddImage(page_dict, "I2", color_jpg);
+
+  testBegin("pdfioFileCreatePage()");
+  if ((st = pdfioFileCreatePage(pdf, page_dict)) == NULL)
+  {
+    testEnd(false);
+    goto done;
+  }
+
+  testEnd(true);
+
+  pdfioContentSetFillColorDeviceRGB(st, 0.0, 0.0, 1.0);
+  pdfioContentPathRect(st, 18.0, 702.0, 559.28, 72.0);
+  pdfioContentFill(st, true);
+
+  pdfioContentSetFillColorDeviceRGB(st, 1.0, 1.0, 1.0);
+  pdfioContentSetStrokeColorDeviceRGB(st, 1.0, 1.0, 1.0);
+
+  pdfioContentSetTextFont(st, "F1", 18.0);
+  pdfioContentTextBegin(st);
+  pdfioContentTextMoveTo(st, 81.0, 729.0);
+  pdfioContentTextShowf(st, false, "This is a %s compliance test page.", pdfa_version);
+  pdfioContentTextEnd(st);
+
+  pdfioContentDrawImage(st, "I1", 36.0, 720.0, 36.0, 36.0);
+
+  width  = pdfioImageGetWidth(color_jpg);
+  height = pdfioImageGetHeight(color_jpg);
+
+  swidth  = 400.0;
+  sheight = swidth * height / width;
+  if (sheight > 500.0)
+  {
+    sheight = 500.0;
+    swidth  = sheight * width / height;
+  }
+
+  tx = 0.5 * (595.28 - swidth);
+  ty = 0.5 * (720.0 - sheight);
+
+  pdfioContentDrawImage(st, "I2", tx, ty, swidth, sheight);
+  pdfioContentTextEnd(st);
+
+  pdfioStreamClose(st);
+
+  status = 0;
+
+  done:
+
+  testBegin("pdfioFileClose()");
+  if (pdfioFileClose(pdf))
+  {
+    testEnd(true);
+    return (status);
+  }
+  else
+  {
+    testEnd(false);
+    return (1);
+  }
 }
 
 
@@ -3070,250 +3731,345 @@ write_png_tests(pdfio_file_t *pdf,	// I - PDF file
 
 
   // Import the PNG test images
-  fputs("pdfioFileCreateImageObjFromFile(\"testfiles/pdfio-color.png\"): ", stdout);
+  testBegin("pdfioFileCreateImageObjFromFile(\"testfiles/pdfio-color.png\")");
   if ((color = pdfioFileCreateImageObjFromFile(pdf, "testfiles/pdfio-color.png", false)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileCreateImageObjFromFile(\"testfiles/pdfio-gray.png\"): ", stdout);
+  testBegin("pdfioFileCreateImageObjFromFile(\"testfiles/pdfio-gray.png\")");
   if ((gray = pdfioFileCreateImageObjFromFile(pdf, "testfiles/pdfio-gray.png", false)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileCreateImageObjFromFile(\"testfiles/pdfio-indexed.png\"): ", stdout);
+  testBegin("pdfioFileCreateImageObjFromFile(\"testfiles/pdfio-indexed.png\")");
   if ((indexed = pdfioFileCreateImageObjFromFile(pdf, "testfiles/pdfio-indexed.png", false)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   ////// PDFio PNG image test page...
   // Create the page dictionary, object, and stream...
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddImage(color): ", stdout);
+  testBegin("pdfioPageDictAddImage(color)");
   if (pdfioPageDictAddImage(dict, "IM1", color))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddImage(gray): ", stdout);
+  testBegin("pdfioPageDictAddImage(gray)");
   if (pdfioPageDictAddImage(dict, "IM2", gray))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddImage(indexed): ", stdout);
+  testBegin("pdfioPageDictAddImage(indexed)");
   if (pdfioPageDictAddImage(dict, "IM3", indexed))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number);
+  testBegin("pdfioFileCreatePage(%d)", number);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_header_footer(st, "PNG Image Test Page", number))
     goto error;
 
   // Show content...
-  fputs("pdfioContentTextBegin(): ", stdout);
+  testBegin("pdfioContentTextBegin()");
   if (pdfioContentTextBegin(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetTextFont(\"F1\", 18.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F1\", 18.0)");
   if (pdfioContentSetTextFont(st, "F1", 18.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(36.0, 342.0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(36.0, 342.0)");
   if (pdfioContentTextMoveTo(st, 36.0, 342.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"PNG RGB Color\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"PNG RGB Color\")");
   if (pdfioContentTextShow(st, false, "PNG RGB Color"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(288.0, 0.0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(288.0, 0.0)");
   if (pdfioContentTextMoveTo(st, 288.0, 0.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"PNG Gray\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"PNG Gray\")");
   if (pdfioContentTextShow(st, false, "PNG Gray"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextMoveTo(-288.0, 288.0): ", stdout);
+  testBegin("pdfioContentTextMoveTo(-288.0, 288.0)");
   if (pdfioContentTextMoveTo(st, -288.0, 288.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextShow(\"PNG Indexed\"): ", stdout);
+  testBegin("pdfioContentTextShow(\"PNG Indexed\")");
   if (pdfioContentTextShow(st, false, "PNG Indexed"))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentTextEnd(): ", stdout);
+  testBegin("pdfioContentTextEnd()");
   if (pdfioContentTextEnd(st))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentDrawImage(\"IM1\"): ", stdout);
+  testBegin("pdfioContentDrawImage(\"IM1\")");
   if (pdfioContentDrawImage(st, "IM1", 36, 108, 216, 216))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentDrawImage(\"IM2\"): ", stdout);
+  testBegin("pdfioContentDrawImage(\"IM2\")");
   if (pdfioContentDrawImage(st, "IM2", 324, 108, 216, 216))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentDrawImage(\"IM3\"): ", stdout);
+  testBegin("pdfioContentDrawImage(\"IM3\")");
   if (pdfioContentDrawImage(st, "IM3", 36, 396, 216, 216))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentSetFillColorDeviceRGB(0, 1, 1): ", stdout);
+  testBegin("pdfioContentSetFillColorDeviceRGB(0, 1, 1)");
   if (pdfioContentSetFillColorDeviceRGB(st, 0.0, 1.0, 1.0))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentPathRect(315, 387, 234, 234): ", stdout);
+  testBegin("pdfioContentPathRect(315, 387, 234, 234)");
   if (pdfioContentPathRect(st, 315, 387, 234, 234))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentFill(false): ", stdout);
+  testBegin("pdfioContentFill(false)");
   if (pdfioContentFill(st, false))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
-  fputs("pdfioContentDrawImage(\"IM3\"): ", stdout);
+  testBegin("pdfioContentDrawImage(\"IM3\")");
   if (pdfioContentDrawImage(st, "IM3", 324, 396, 216, 216))
-    puts("PASS");
+    testEnd(true);
   else
     goto error;
 
   // Close the object and stream...
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
 #ifdef HAVE_LIBPNG
   ////// PngSuite page
   // Create the image objects...
   for (i = 0; i < (sizeof(pngsuite_files) / sizeof(pngsuite_files[0])); i ++)
   {
-    fprintf(stdout, "pdfioFileCreateImageObjFromFile(\"%s\"): ", pngsuite_files[i]);
+    testBegin("pdfioFileCreateImageObjFromFile(\"%s\")", pngsuite_files[i]);
     if ((pngsuite[i] = pdfioFileCreateImageObjFromFile(pdf, pngsuite_files[i], false)) != NULL)
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
   }
 
   // Create the page dictionary, object, and stream...
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   for (i = 0; i < (sizeof(pngsuite_files) / sizeof(pngsuite_files[0])); i ++)
   {
-    fprintf(stdout, "pdfioPageDictAddImage(\"%s\"): ", pngsuite_labels[i]);
+    testBegin("pdfioPageDictAddImage(\"%s\")", pngsuite_labels[i]);
     snprintf(imgname, sizeof(imgname), "IM%u", (unsigned)(i + 1));
     if (pdfioPageDictAddImage(dict, pdfioStringCreate(pdf, imgname), pngsuite[i]))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       return (1);
+    }
   }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  printf("pdfioFileCreatePage(%d): ", number + 1);
+  testBegin("pdfioFileCreatePage(%d)", number + 1);
 
   if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   if (write_header_footer(st, "PngSuite Test Page", number + 1))
     goto error;
 
   // Show content...
-  fputs("pdfioContentSetTextFont(\"F1\", 9.0): ", stdout);
+  testBegin("pdfioContentSetTextFont(\"F1\", 9.0)");
   if (pdfioContentSetTextFont(st, "F1", 8.0))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     goto error;
+  }
 
   for (i = 0; i < (sizeof(pngsuite_files) / sizeof(pngsuite_files[0])); i ++)
   {
     double x = (i % 8) * 69.0 + 36;	// X position
     double y = 671 - (i / 8) * 64.0;	// Y position
 
-    fputs("pdfioContentTextBegin(): ", stdout);
+    testBegin("pdfioContentTextBegin()");
     if (pdfioContentTextBegin(st))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       goto error;
+    }
 
-    printf("pdfioContentTextMoveTo(%g, %g): ", x, y);
+    testBegin("pdfioContentTextMoveTo(%g, %g)", x, y);
     if (pdfioContentTextMoveTo(st, x, y))
-      puts("PASS");
+      testEnd(true);
     else
       goto error;
 
-    printf("pdfioContentTextShow(\"%s\"): ", pngsuite_labels[i]);
+    testBegin("pdfioContentTextShow(\"%s\")", pngsuite_labels[i]);
     if (pdfioContentTextShow(st, false, pngsuite_labels[i]))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       goto error;
+    }
 
-    fputs("pdfioContentTextEnd(): ", stdout);
+    testBegin("pdfioContentTextEnd()");
     if (pdfioContentTextEnd(st))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       goto error;
+    }
   }
 
   for (i = 0; i < (sizeof(pngsuite_files) / sizeof(pngsuite_files[0])); i ++)
@@ -3322,19 +4078,29 @@ write_png_tests(pdfio_file_t *pdf,	// I - PDF file
     double y = 671 - (i / 8) * 64.0;	// Y position
 
     snprintf(imgname, sizeof(imgname), "IM%u", (unsigned)(i + 1));
-    printf("pdfioContentDrawImage(\"%s\"): ", imgname);
+    testBegin("pdfioContentDrawImage(\"%s\")", imgname);
     if (pdfioContentDrawImage(st, imgname, x, y + 9, 32, 32))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
       goto error;
+    }
   }
 
   // Close the object and stream...
-  fputs("pdfioStreamClose: ", stdout);
+  testBegin("pdfioStreamClose");
   if (pdfioStreamClose(st))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 #endif // HAVE_LIBPNG
 
   return (0);
@@ -3367,30 +4133,50 @@ write_text_test(pdfio_file_t *pdf,		// I - PDF file
 
 
   // Create text font...
-  fputs("pdfioFileCreateFontObjFromBase(\"Courier\"): ", stdout);
+  testBegin("pdfioFileCreateFontObjFromBase(\"Courier\")");
   if ((courier = pdfioFileCreateFontObjFromBase(pdf, "Courier")) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   // Create the page dictionary...
-  fputs("pdfioDictCreate: ", stdout);
+  testBegin("pdfioDictCreate");
   if ((dict = pdfioDictCreate(pdf)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F1): ", stdout);
+  testBegin("pdfioPageDictAddFont(F1)");
   if (pdfioPageDictAddFont(dict, "F1", font))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageDictAddFont(F2): ", stdout);
+  testBegin("pdfioPageDictAddFont(F2)");
   if (pdfioPageDictAddFont(dict, "F2", courier))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   // Open the print file...
   if ((fp = fopen(filename, "r")) == NULL)
@@ -3409,10 +4195,10 @@ write_text_test(pdfio_file_t *pdf,		// I - PDF file
 
     if (plinenum == 0)
     {
-      printf("pdfioFileCreatePage(%d): ", page);
+      testBegin("pdfioFileCreatePage(%d)", page);
 
       if ((st = pdfioFileCreatePage(pdf, dict)) != NULL)
-	puts("PASS");
+	testEnd(true);
       else
         goto error;
 
@@ -3422,27 +4208,27 @@ write_text_test(pdfio_file_t *pdf,		// I - PDF file
       page ++;
       plinenum ++;
 
-      fputs("pdfioContentTextBegin(): ", stdout);
+      testBegin("pdfioContentTextBegin()");
       if (pdfioContentTextBegin(st))
-	puts("PASS");
+	testEnd(true);
       else
 	goto error;
 
-      fputs("pdfioContentSetTextFont(\"F2\", 10.0): ", stdout);
+      testBegin("pdfioContentSetTextFont(\"F2\", 10.0)");
       if (pdfioContentSetTextFont(st, "F2", 10.0))
-	puts("PASS");
+	testEnd(true);
       else
 	goto error;
 
-      fputs("pdfioContentSetTextLeading(12.0): ", stdout);
+      testBegin("pdfioContentSetTextLeading(12.0)");
       if (pdfioContentSetTextLeading(st, 12.0))
-	puts("PASS");
+	testEnd(true);
       else
 	goto error;
 
-      fputs("pdfioContentTextMoveTo(36.0, 708.0): ", stdout);
+      testBegin("pdfioContentTextMoveTo(36.0, 708.0)");
       if (pdfioContentTextMoveTo(st, 36.0, 708.0))
-	puts("PASS");
+	testEnd(true);
       else
 	goto error;
     }
@@ -3475,15 +4261,15 @@ write_text_test(pdfio_file_t *pdf,		// I - PDF file
     plinenum ++;
     if (plinenum >= 56)
     {
-      fputs("pdfioContentTextEnd(): ", stdout);
+      testBegin("pdfioContentTextEnd()");
       if (pdfioContentTextEnd(st))
-	puts("PASS");
+	testEnd(true);
       else
 	goto error;
 
-      fputs("pdfioStreamClose: ", stdout);
+      testBegin("pdfioStreamClose");
       if (pdfioStreamClose(st))
-	puts("PASS");
+	testEnd(true);
       else
 	goto error;
 
@@ -3494,17 +4280,23 @@ write_text_test(pdfio_file_t *pdf,		// I - PDF file
 
   if (plinenum > 0)
   {
-    fputs("pdfioContentTextEnd(): ", stdout);
+    testBegin("pdfioContentTextEnd()");
     if (pdfioContentTextEnd(st))
-      puts("PASS");
+      testEnd(true);
     else
       goto error;
 
-    fputs("pdfioStreamClose: ", stdout);
+    testBegin("pdfioStreamClose");
     if (pdfioStreamClose(st))
-      puts("PASS");
+    {
+      testEnd(true);
+    }
     else
+    {
+      testEnd(false);
+      fclose(fp);
       return (1);
+    }
   }
 
   fclose(fp);
@@ -3513,6 +4305,7 @@ write_text_test(pdfio_file_t *pdf,		// I - PDF file
 
   error:
 
+  testEnd(false);
   fclose(fp);
   pdfioStreamClose(st);
   return (1);
@@ -3541,140 +4334,181 @@ write_unit_file(
 
 
   // Get the root object/catalog dictionary
-  fputs("pdfioFileGetCatalog: ", stdout);
+  testBegin("pdfioFileGetCatalog");
   if ((catalog = pdfioFileGetCatalog(outpdf)) != NULL)
   {
-    puts("PASS");
+    testEnd(true);
   }
   else
   {
-    puts("FAIL (got NULL, expected dictionary)");
+    testEndMessage(false, "got NULL, expected dictionary");
     return (1);
   }
 
   // Set some catalog values...
   pdfioDictSetName(catalog, "PageLayout", "SinglePage");
   pdfioDictSetName(catalog, "PageMode", "UseThumbs");
-  pdfioDictSetString(catalog, "Lang", "en");
 
   // Set info values...
-  fputs("pdfioFileGet/SetAuthor: ", stdout);
+  testBegin("pdfioFileGet/SetAuthor");
   pdfioFileSetAuthor(outpdf, "Michael R Sweet");
   if ((s = pdfioFileGetAuthor(outpdf)) != NULL && !strcmp(s, "Michael R Sweet"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'Michael R Sweet')\n", s);
+    testEndMessage(false, "got '%s', expected 'Michael R Sweet'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'Michael R Sweet')");
+    testEndMessage(false, "got NULL, expected 'Michael R Sweet'");
     return (1);
   }
 
-  fputs("pdfioFileGet/SetCreator: ", stdout);
+  testBegin("pdfioFileGet/SetCreator");
   pdfioFileSetCreator(outpdf, "testpdfio");
   if ((s = pdfioFileGetCreator(outpdf)) != NULL && !strcmp(s, "testpdfio"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'testpdfio')\n", s);
+    testEndMessage(false, "got '%s', expected 'testpdfio'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'testpdfio')");
+    testEndMessage(false, "got NULL, expected 'testpdfio'");
     return (1);
   }
 
-  fputs("pdfioFileGet/SetKeywords: ", stdout);
+  testBegin("pdfioFileGet/SetKeywords");
   pdfioFileSetKeywords(outpdf, "one fish,two fish,red fish,blue fish");
   if ((s = pdfioFileGetKeywords(outpdf)) != NULL && !strcmp(s, "one fish,two fish,red fish,blue fish"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'one fish,two fish,red fish,blue fish')\n", s);
+    testEndMessage(false, "got '%s', expected 'one fish,two fish,red fish,blue fish'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'one fish,two fish,red fish,blue fish')");
+    testEndMessage(false, "got NULL, expected 'one fish,two fish,red fish,blue fish'");
     return (1);
   }
 
-  fputs("pdfioFileGet/SetSubject: ", stdout);
+  testBegin("pdfioFileGet/SetLanguage");
+  pdfioFileSetLanguage(outpdf, "en-CA");
+  if ((s = pdfioFileGetLanguage(outpdf)) != NULL && !strcmp(s, "en-CA"))
+  {
+    testEnd(true);
+  }
+  else if (s)
+  {
+    testEndMessage(false, "got '%s', expected 'en-CA'", s);
+    return (1);
+  }
+  else
+  {
+    testEndMessage(false, "got NULL, expected 'en-CA'");
+    return (1);
+  }
+
+  testBegin("pdfioFileGet/SetSubject");
   pdfioFileSetSubject(outpdf, "Unit test document");
   if ((s = pdfioFileGetSubject(outpdf)) != NULL && !strcmp(s, "Unit test document"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'Unit test document')\n", s);
+    testEndMessage(false, "got '%s', expected 'Unit test document'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'Unit test document')");
+    testEndMessage(false, "got NULL, expected 'Unit test document'");
     return (1);
   }
 
-  fputs("pdfioFileGet/SetTitle: ", stdout);
+  testBegin("pdfioFileGet/SetTitle");
   pdfioFileSetTitle(outpdf, "Test Document");
   if ((s = pdfioFileGetTitle(outpdf)) != NULL && !strcmp(s, "Test Document"))
   {
-    puts("PASS");
+    testEnd(true);
   }
   else if (s)
   {
-    printf("FAIL (got '%s', expected 'Test Document')\n", s);
+    testEndMessage(false, "got '%s', expected 'Test Document'", s);
     return (1);
   }
   else
   {
-    puts("FAIL (got NULL, expected 'Test Document')");
+    testEndMessage(false, "got NULL, expected 'Test Document'");
     return (1);
   }
 
   // Create some image objects...
-  fputs("pdfioFileCreateImageObjFromFile(\"testfiles/color.jpg\"): ", stdout);
+  testBegin("pdfioFileCreateImageObjFromFile(\"testfiles/color.jpg\")");
   if ((color_jpg = pdfioFileCreateImageObjFromFile(outpdf, "testfiles/color.jpg", true)) != NULL)
-    printf("PASS (%u)\n", (unsigned)pdfioObjGetNumber(color_jpg));
+  {
+    testEndMessage(true, "%u", (unsigned)pdfioObjGetNumber(color_jpg));
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioFileCreateImageObjFromFile(\"testfiles/gray.jpg\"): ", stdout);
+  testBegin("pdfioFileCreateImageObjFromFile(\"testfiles/gray.jpg\")");
   if ((gray_jpg = pdfioFileCreateImageObjFromFile(outpdf, "testfiles/gray.jpg", true)) != NULL)
-    printf("PASS (%u)\n", (unsigned)pdfioObjGetNumber(gray_jpg));
+  {
+    testEndMessage(true, "%u", (unsigned)pdfioObjGetNumber(gray_jpg));
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   // Create fonts...
-  fputs("pdfioFileCreateFontObjFromBase(\"Helvetica\"): ", stdout);
+  testBegin("pdfioFileCreateFontObjFromBase(\"Helvetica\")");
   if ((helvetica = pdfioFileCreateFontObjFromBase(outpdf, "Helvetica")) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   // Copy the first page from the test PDF file...
-  fputs("pdfioFileGetPage(0): ", stdout);
+  testBegin("pdfioFileGetPage(0)");
   if ((page = pdfioFileGetPage(inpdf, 0)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageCopy(first page): ", stdout);
+  testBegin("pdfioPageCopy(first page)");
   if (pdfioPageCopy(outpdf, page))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   pagenum ++;
 
@@ -3685,17 +4519,27 @@ write_unit_file(
   pagenum ++;
 
   // Copy the third page from the test PDF file...
-  fputs("pdfioFileGetPage(2): ", stdout);
+  testBegin("pdfioFileGetPage(2)");
   if ((page = pdfioFileGetPage(inpdf, 2)) != NULL)
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
-  fputs("pdfioPageCopy(third page): ", stdout);
+  testBegin("pdfioPageCopy(third page)");
   if (pdfioPageCopy(outpdf, page))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   pagenum ++;
 
@@ -3753,23 +4597,28 @@ write_unit_file(
   if (write_text_test(outpdf, pagenum, helvetica, "README.md"))
     return (1);
 
-  fputs("pdfioFileGetNumPages: ", stdout);
+  testBegin("pdfioFileGetNumPages");
   if ((*num_pages = pdfioFileGetNumPages(outpdf)) > 0)
   {
-    printf("PASS (%lu)\n", (unsigned long)*num_pages);
+    testEndMessage(true, "%lu", (unsigned long)*num_pages);
   }
   else
   {
-    puts("FAIL");
+    testEnd(false);
     return (1);
   }
 
   // Close the new PDF file...
-  printf("pdfioFileClose(\"%s\"): ", outname);
+  testBegin("pdfioFileClose(\"%s\")", outname);
   if (pdfioFileClose(outpdf))
-    puts("PASS");
+  {
+    testEnd(true);
+  }
   else
+  {
+    testEnd(false);
     return (1);
+  }
 
   return (0);
 }

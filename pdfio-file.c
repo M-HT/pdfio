@@ -1,13 +1,14 @@
 //
 // PDF file functions for PDFio.
 //
-// Copyright © 2021-2025 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
 //
 
 #include "pdfio-private.h"
+#include "pdfio-content.h"
 #ifndef O_BINARY
 #  define O_BINARY 0
 #endif // !O_BINARY
@@ -21,11 +22,13 @@ static pdfio_obj_t	*add_obj(pdfio_file_t *pdf, size_t number, unsigned short gen
 static int		compare_objmaps(_pdfio_objmap_t *a, _pdfio_objmap_t *b);
 static pdfio_file_t	*create_common(const char *filename, int fd, pdfio_output_cb_t output_cb, void *output_cbdata, const char *version, pdfio_rect_t *media_box, pdfio_rect_t *crop_box, pdfio_error_cb_t error_cb, void *error_cbdata);
 static const char	*get_info_string(pdfio_file_t *pdf, const char *key);
+static char		*get_iso_date(time_t t, char *buffer, size_t bufsize);
 static struct lconv	*get_lconv(void);
 static bool		load_obj_stream(pdfio_obj_t *obj);
 static bool		load_pages(pdfio_file_t *pdf, pdfio_obj_t *obj, size_t depth);
 static bool		load_xref(pdfio_file_t *pdf, off_t xref_offset, pdfio_password_cb_t password_cb, void *password_data);
 static bool		repair_xref(pdfio_file_t *pdf, pdfio_password_cb_t password_cb, void *password_data);
+static bool		write_metadata(pdfio_file_t *pdf);
 static bool		write_pages(pdfio_file_t *pdf);
 static bool		write_trailer(pdfio_file_t *pdf);
 
@@ -124,7 +127,11 @@ pdfioFileClose(pdfio_file_t *pdf)	// I - PDF file
   {
     ret = false;
 
-    if (pdfioObjClose(pdf->info_obj) && write_pages(pdf) && pdfioObjClose(pdf->root_obj) && write_trailer(pdf))
+    // Add default OutputIntent for PDF/A CMYK printing...
+    pdfioFileAddOutputIntent(pdf, /*subtype*/"GTS_PDFA1", /*condition*/"CMYK", /*cond_id*/"CGATS001", /*reg_name*/NULL, /*info*/"CMYK Printing", /*profile*/NULL);
+
+    // Close and write out the last bits...
+    if (write_metadata(pdf) && pdfioObjClose(pdf->info_obj) && write_pages(pdf) && pdfioObjClose(pdf->root_obj) && write_trailer(pdf))
       ret = _pdfioFileFlush(pdf);
   }
 
@@ -174,8 +181,20 @@ pdfioFileClose(pdfio_file_t *pdf)	// I - PDF file
 // name of the PDF file to create.
 //
 // The "version" argument specifies the PDF version number for the file or
-// `NULL` for the default ("2.0").  The value "PCLm-1.0" can be specified to
-// produce the PCLm subset of PDF.
+// `NULL` for the default ("2.0").  The following values are recognized:
+//
+// - "1.3", "1.4", "1.5", "1.6", "1.7", "2.0": Generic PDF files of the
+//   specified versions.
+// - "PCLm-1.0": The PCLm (raster) subset of PDF supported by some printers.
+// - "PDF/A-1a": PDF/A-1a:2005
+// - "PDF/A-1b": PDF/A-1b:2005
+// - "PDF/A-2a": PDF/A-2a:2011
+// - "PDF/A-2b": PDF/A-2b:2011
+// - "PDF/A-2u": PDF/A-2u:2011
+// - "PDF/A-3a": PDF/A-3a:2012
+// - "PDF/A-3b": PDF/A-3b:2012
+// - "PDF/A-3u": PDF/A-3u:2012
+// - "PDF/A-4": PDF/A-4:2020
 //
 // The "media_box" and "crop_box" arguments specify the default MediaBox and
 // CropBox for pages in the PDF file - if `NULL` then a default "Universal" size
@@ -183,8 +202,22 @@ pdfioFileClose(pdfio_file_t *pdf)	// I - PDF file
 //
 // The "error_cb" and "error_cbdata" arguments specify an error handler callback
 // and its data pointer - if `NULL` then the default error handler is used that
-// writes error messages to `stderr`.  The error handler callback should return
-// `true` to continue writing the PDF file or `false` to stop.
+// writes error and warning messages to `stderr`.  The error handler callback
+// should return `true` to continue writing the PDF file or `false` to stop.
+// For example:
+//
+// ```
+// bool
+// my_error_cb(pdfio_file_t *pdf, const char *message, void *data)
+// {
+//   (void)data; /* Not using data pointer in this callback */
+//
+//   fprintf(stderr, "%s: %s\n", pdfioFileGetName(pdf), message);
+//
+//   /* Return true to continue on warning messages, false otherwise... */
+//   return (!strncmp(message, "WARNING:", 8));
+// }
+// ```
 //
 
 pdfio_file_t *				// O - PDF file or `NULL` on error
@@ -412,9 +445,22 @@ _pdfioFileCreateObj(
 // ```
 //
 // The "version" argument specifies the PDF version number for the file or
-// `NULL` for the default ("2.0").  Unlike @link pdfioFileCreate@ and
-// @link pdfioFileCreateTemporary@, it is generally not safe to pass the
-// "PCLm-1.0" version string.
+// `NULL` for the default ("2.0").  The following values are recognized:
+//
+// - "1.3", "1.4", "1.5", "1.6", "1.7", "2.0": Generic PDF files of the
+//   specified versions.
+// - "PDF/A-1a": PDF/A-1a:2005
+// - "PDF/A-1b": PDF/A-1b:2005
+// - "PDF/A-2a": PDF/A-2a:2011
+// - "PDF/A-2b": PDF/A-2b:2011
+// - "PDF/A-2u": PDF/A-2u:2011
+// - "PDF/A-3a": PDF/A-3a:2012
+// - "PDF/A-3b": PDF/A-3b:2012
+// - "PDF/A-3u": PDF/A-3u:2012
+// - "PDF/A-4": PDF/A-4:2020
+//
+// Unlike @link pdfioFileCreate@ and @link pdfioFileCreateTemporary@, it is
+// generally not safe to pass the "PCLm-1.0" version string.
 //
 // The "media_box" and "crop_box" arguments specify the default MediaBox and
 // CropBox for pages in the PDF file - if `NULL` then a default "Universal" size
@@ -422,8 +468,22 @@ _pdfioFileCreateObj(
 //
 // The "error_cb" and "error_cbdata" arguments specify an error handler callback
 // and its data pointer - if `NULL` then the default error handler is used that
-// writes error messages to `stderr`.  The error handler callback should return
-// `true` to continue writing the PDF file or `false` to stop.
+// writes error and warning messages to `stderr`.  The error handler callback
+// should return `true` to continue writing the PDF file or `false` to stop.
+// For example:
+//
+// ```
+// bool
+// my_error_cb(pdfio_file_t *pdf, const char *message, void *data)
+// {
+//   (void)data; /* Not using data pointer in this callback */
+//
+//   fprintf(stderr, "%s: %s\n", pdfioFileGetName(pdf), message);
+//
+//   /* Return true to continue on warning messages, false otherwise... */
+//   return (!strncmp(message, "WARNING:", 8));
+// }
+// ```
 //
 // > *Note*: Files created using this API are slightly larger than those
 // > created using the @link pdfioFileCreate@ function since stream lengths are
@@ -481,8 +541,9 @@ pdfioFileCreatePage(pdfio_file_t *pdf,	// I - PDF file
 
   pdfioDictSetObj(dict, "Parent", pdf->pages_obj);
 
-  if (!_pdfioDictGetValue(dict, "Resources"))
-    pdfioDictSetDict(dict, "Resources", pdfioDictCreate(pdf));
+  pdfioPageDictAddColorSpace(dict, "DefaultGray", pdfioArrayCreateColorFromStandard(pdf, 1, PDFIO_CS_SRGB));
+  pdfioPageDictAddColorSpace(dict, "DefaultRGB", pdfioArrayCreateColorFromStandard(pdf, 3, PDFIO_CS_SRGB));
+  pdfioPageDictAddColorSpace(dict, "DefaultCMYK", pdfioArrayCreateColorFromStandard(pdf, 4, PDFIO_CS_CGATS001));
 
   if (!_pdfioDictGetValue(dict, "Type"))
     pdfioDictSetName(dict, "Type", "Page");
@@ -555,8 +616,20 @@ pdfioFileCreateStringObj(
 // will have a ".pdf" extension.
 //
 // The "version" argument specifies the PDF version number for the file or
-// `NULL` for the default ("2.0").  The value "PCLm-1.0" can be specified to
-// produce the PCLm subset of PDF.
+// `NULL` for the default ("2.0").  The following values are recognized:
+//
+// - "1.3", "1.4", "1.5", "1.6", "1.7", "2.0": Generic PDF files of the
+//   specified versions.
+// - "PCLm-1.0": The PCLm (raster) subset of PDF supported by some printers.
+// - "PDF/A-1a": PDF/A-1a:2005
+// - "PDF/A-1b": PDF/A-1b:2005
+// - "PDF/A-2a": PDF/A-2a:2011
+// - "PDF/A-2b": PDF/A-2b:2011
+// - "PDF/A-2u": PDF/A-2u:2011
+// - "PDF/A-3a": PDF/A-3a:2012
+// - "PDF/A-3b": PDF/A-3b:2012
+// - "PDF/A-3u": PDF/A-3u:2012
+// - "PDF/A-4": PDF/A-4:2020
 //
 // The "media_box" and "crop_box" arguments specify the default MediaBox and
 // CropBox for pages in the PDF file - if `NULL` then a default "Universal" size
@@ -720,7 +793,7 @@ pdfioFileFindObj(
   if (number == pdf->objs[current]->number)
   {
     // Fast match...
-    PDFIO_DEBUG("pdfioFileFindObj: Returning %lu (%p)\n", (unsigned long)current, pdf->objs[current]);
+    PDFIO_DEBUG("pdfioFileFindObj: Returning %lu (%p)\n", (unsigned long)current, (void *)pdf->objs[current]);
     return (pdf->objs[current]);
   }
   else if (number < pdf->objs[current]->number)
@@ -748,12 +821,12 @@ pdfioFileFindObj(
 
   if (number == pdf->objs[left]->number)
   {
-    PDFIO_DEBUG("pdfioFileFindObj: Returning %lu (%p)\n", (unsigned long)left, pdf->objs[left]);
+    PDFIO_DEBUG("pdfioFileFindObj: Returning %lu (%p)\n", (unsigned long)left, (void *)pdf->objs[left]);
     return (pdf->objs[left]);
   }
   else if (number == pdf->objs[right]->number)
   {
-    PDFIO_DEBUG("pdfioFileFindObj: Returning %lu (%p)\n", (unsigned long)right, pdf->objs[right]);
+    PDFIO_DEBUG("pdfioFileFindObj: Returning %lu (%p)\n", (unsigned long)right, (void *)pdf->objs[right]);
     return (pdf->objs[right]);
   }
   else
@@ -830,6 +903,24 @@ const char *				// O - Keywords string or `NULL` for none
 pdfioFileGetKeywords(pdfio_file_t *pdf)	// I - PDF file
 {
   return (get_info_string(pdf, "Keywords"));
+}
+
+
+//
+// 'pdfioFileGetLanguage()' - Get the language metadata for a PDF file.
+//
+// This function gets the (primary/default) language metadata, if any, for a PDF
+// file.  The returned string is an IETF BCP 47 language tag of the form
+// "lang-REGION".  For example, the string "en-CA" specifies Canadian English
+// and the string "fr-CA" specifies Canadian French.
+//
+// @since PDFio 1.6@
+//
+
+const char *				// O - Language or `NULL` for none
+pdfioFileGetLanguage(pdfio_file_t *pdf)	// I - PDF file
+{
+  return (pdfioDictGetString(pdfioFileGetCatalog(pdf), "Lang"));
 }
 
 
@@ -997,8 +1088,22 @@ pdfioFileGetVersion(
 //
 // The "error_cb" and "error_cbdata" arguments specify an error handler callback
 // and its data pointer - if `NULL` then the default error handler is used that
-// writes error messages to `stderr`.  The error handler callback should return
-// `true` to continue reading the PDF file or `false` to stop.
+// writes error and warning messages to `stderr`.  The error handler callback
+// should return `true` to continue reading the PDF file or `false` to stop.
+// For example:
+//
+// ```
+// bool
+// my_error_cb(pdfio_file_t *pdf, const char *message, void *data)
+// {
+//   (void)data; /* Not using data pointer in this callback */
+//
+//   fprintf(stderr, "%s: %s\n", pdfioFileGetName(pdf), message);
+//
+//   /* Return true to continue on warning messages, false otherwise... */
+//   return (!strncmp(message, "WARNING:", 8));
+// }
+// ```
 //
 // > Note: Error messages starting with "WARNING:" are actually warning
 // > messages - the callback should normally return `true` to allow PDFio to
@@ -1046,8 +1151,9 @@ pdfioFileOpen(
     char	message[8192];		// Message string
 
     temp.filename = (char *)filename;
-    snprintf(message, sizeof(message), "Unable to allocate memory for PDF file - %s", strerror(errno));
+    snprintf(message, sizeof(message), "Unable to allocate memory for PDF file: %s", strerror(errno));
     (error_cb)(&temp, message, error_cbdata);
+
     return (NULL);
   }
 
@@ -1115,7 +1221,7 @@ pdfioFileOpen(
   }
   else
   {
-    PDFIO_DEBUG("pdfioFileOpen: line=%p,ptr=%p(\"%s\")\n", line, ptr, ptr);
+    PDFIO_DEBUG("pdfioFileOpen: line=%p,ptr=%p(\"%s\")\n", (void *)line, (void *)ptr, ptr);
 
     xref_offset = (off_t)strtol(ptr + 9, NULL, 10);
 
@@ -1204,6 +1310,26 @@ pdfioFileSetKeywords(
 
 
 //
+// 'pdfioFileSetLanguage()' - Set the language metadata for a PDF file.
+//
+// This function sets the (primary/default) language metadata for a PDF file.
+// The "value" argument is an IETF BCP 47 language tag string of the form
+// "lang-REGION".  For example, the string "en-CA" specifies Canadian English
+// and the string "fr-CA" specifies Canadian French.
+//
+// @since PDFio 1.6@
+//
+
+void
+pdfioFileSetLanguage(
+    pdfio_file_t *pdf,			// I - PDF file
+    const char   *value)		// I - Value
+{
+  pdfioDictSetString(pdfioFileGetCatalog(pdf), "Lang", value);
+}
+
+
+//
 // 'pdfioFileSetModificationDate()' - Set the modification date for a PDF file.
 //
 
@@ -1240,20 +1366,25 @@ pdfioFileSetPermissions(
   if (!pdf)
     return (false);
 
-  if (pdf->num_objs > 3)		// First three objects are pages, info, and root
+  if (pdf->profile >= _PDFIO_PROFILE_PDFA_1A && pdf->profile <= _PDFIO_PROFILE_PDFA_4 && encryption != PDFIO_ENCRYPTION_NONE)
   {
-    _pdfioFileError(pdf, "You must call pdfioFileSetPermissions before adding any objects.");
+    _pdfioFileError(pdf, "Encryption is not allowed for PDF/A files.");
     return (false);
   }
 
   if (encryption == PDFIO_ENCRYPTION_NONE)
     return (true);
 
+  if (pdf->num_objs > 3)		// First three objects are pages, info, and root
+  {
+    _pdfioFileError(pdf, "You must call pdfioFileSetPermissions before adding any objects.");
+    return (false);
+  }
+
   pdf->encrypt_metadata = true;
 
   return (_pdfioCryptoLock(pdf, permissions, encryption, owner_password, user_password));
 }
-
 
 //
 // 'pdfioFileSetSubject()' - Set the subject for a PDF file.
@@ -1326,7 +1457,7 @@ add_obj(pdfio_file_t   *pdf,		// I - PDF file
   obj->generation = generation;
   obj->offset     = offset;
 
-  PDFIO_DEBUG("add_obj: obj=%p, ->pdf=%p, ->number=%lu, ->offset=%lu\n", obj, pdf, (unsigned long)obj->number, (unsigned long)offset);
+  PDFIO_DEBUG("add_obj: obj=%p, ->pdf=%p, ->number=%lu, ->offset=%lu\n", (void *)obj, (void *)pdf, (unsigned long)obj->number, (unsigned long)offset);
 
   // Insert object into array as needed...
   if (pdf->num_objs == 0 || obj->number > pdf->objs[pdf->num_objs - 1]->number)
@@ -1426,6 +1557,7 @@ create_common(
   unsigned char	id_value[16];		// File ID value
   time_t	curtime;		// Creation date/time
   _pdfio_sha256_t ctx;			// Hashing context
+  const char	*file_version;		// PDF file version string
 
 
   PDFIO_DEBUG("create_common(filename=\"%s\", fd=%d, output_cb=%p, output_cbdata=%p, version=\"%s\", media_box=%p, crop_box=%p, error_cb=%p, error_cbdata=%p)\n", filename, fd, (void *)output_cb, (void *)output_cbdata, version, (void *)media_box, (void *)crop_box, (void *)error_cb, (void *)error_cbdata);
@@ -1433,9 +1565,6 @@ create_common(
   // Range check input...
   if (!filename || (fd < 0 && !output_cb))
     return (NULL);
-
-  if (!version)
-    version = "2.0";
 
   if (!error_cb)
   {
@@ -1462,7 +1591,58 @@ create_common(
   pdf->output_cb   = output_cb;
   pdf->output_ctx  = output_cbdata;
   pdf->filename    = strdup(filename);
-  pdf->version     = strdup(!strncmp(version, "PCLm-", 5) ? "1.4" : version);
+
+  if (!version)
+    version = "2.0";
+
+  if (!strncmp(version, "PDF/A-1", 7))
+  {
+    file_version = "1.4";
+
+    if (version[7] == 'a')
+      pdf->profile = _PDFIO_PROFILE_PDFA_1A;
+    else
+      pdf->profile = _PDFIO_PROFILE_PDFA_1B; // Default to 'b'
+  }
+  else if (!strncmp(version, "PDF/A-2", 7))
+  {
+    file_version = "1.7";
+
+    if (version[7] == 'a')
+      pdf->profile = _PDFIO_PROFILE_PDFA_2A;
+    else if (version[7] == 'u')
+      pdf->profile = _PDFIO_PROFILE_PDFA_2U;
+    else
+      pdf->profile = _PDFIO_PROFILE_PDFA_2B; // Default to 'b'
+  }
+  else if (!strncmp(version, "PDF/A-3", 7))
+  {
+    file_version = "1.7";
+
+    if (version[7] == 'a')
+      pdf->profile = _PDFIO_PROFILE_PDFA_3A;
+    else if (version[7] == 'u')
+      pdf->profile = _PDFIO_PROFILE_PDFA_3U;
+    else
+      pdf->profile = _PDFIO_PROFILE_PDFA_3B; // Default to 'b'
+  }
+  else if (!strncmp(version, "PDF/A-4", 7))
+  {
+    file_version = "2.0";
+    pdf->profile = _PDFIO_PROFILE_PDFA_4;
+  }
+  else if (!strncmp(version, "PCLm-", 5))
+  {
+    file_version = "1.4";
+    pdf->profile = _PDFIO_PROFILE_PCLM;
+  }
+  else
+  {
+    file_version = version;
+    pdf->profile = _PDFIO_PROFILE_NONE;
+  }
+
+  pdf->version     = strdup(file_version);
   pdf->mode        = _PDFIO_MODE_WRITE;
   pdf->error_cb    = error_cb;
   pdf->error_data  = error_cbdata;
@@ -1492,13 +1672,13 @@ create_common(
     pdf->crop_box.y2 = 11.0f * 72.0f;
   }
 
-  // Write a standard PDF header...
-  if (!strncmp(version, "PCLm-", 5))
+  // Write the PDF header (special case for PCLm, otherwise standard header)
+  if (pdf->profile == _PDFIO_PROFILE_PCLM)
   {
     if (!_pdfioFilePrintf(pdf, "%%PDF-1.4\n%%%s\n", version))
       goto error;
   }
-  else if (!_pdfioFilePrintf(pdf, "%%PDF-%s\n%%\342\343\317\323\n", version))
+  else if (!_pdfioFilePrintf(pdf, "%%PDF-%s\n%%\342\343\317\323\n", pdf->version))
   {
     goto error;
   }
@@ -1585,6 +1765,32 @@ get_info_string(pdfio_file_t *pdf,	// I - PDF file
 
 
 //
+// 'get_iso_date()' - Convert a time_t value to an ISO 8601 date/time value.
+//
+
+static char *				// O - Date string
+get_iso_date(time_t t,			// I - Time value in seconds
+             char   *buffer,		// I - Date buffer
+             size_t bufsize)		// I - Size of date buffer
+{
+  struct tm	d;			// Date values
+
+
+  // Convert time to UTC date
+#if _WIN32
+  gmtime_s(&d, &t);
+#else
+  gmtime_r(&t, &d);
+#endif // _WIN32
+
+  // Format the string and return...
+  snprintf(buffer, bufsize, "%04d-%02d-%02dT%02d:%02d:%02dZ", d.tm_year + 1900, d.tm_mon + 1, d.tm_mday, d.tm_hour, d.tm_min, d.tm_sec);
+
+  return (buffer);
+}
+
+
+//
 // 'get_lconv()' - Get any locale-specific numeric information.
 //
 
@@ -1596,7 +1802,7 @@ get_lconv(void)
 
   if ((loc = localeconv()) != NULL)
   {
-    PDFIO_DEBUG("get_lconv: loc=%p, loc->decimal_point=\"%s\"\n", loc, loc->decimal_point);
+    PDFIO_DEBUG("get_lconv: loc=%p, loc->decimal_point=\"%s\"\n", (void *)loc, loc->decimal_point);
 
     if (!loc->decimal_point || !strcmp(loc->decimal_point, "."))
       loc = NULL;
@@ -1633,7 +1839,7 @@ load_obj_stream(pdfio_obj_t *obj)	// I - Object to load
   int			count;		// Count of objects
 
 
-  PDFIO_DEBUG("load_obj_stream(obj=%p(%d))\n", obj, (int)obj->number);
+  PDFIO_DEBUG("load_obj_stream(obj=%p(%d))\n", (void *)obj, (int)obj->number);
 
   // Open the object stream...
   if ((st = pdfioObjOpenStream(obj, true)) == NULL)
@@ -1801,6 +2007,9 @@ load_xref(
   off_t		line_offset;		// Offset to start of line
   pdfio_obj_t	*pages_obj;		// Pages object
   off_t		new_offset;
+  size_t	num_xrefs = 1;		// Number of xref offsets
+  off_t		xrefs[100] = { xref_offset };
+					// xref offsets
 
 
   while (!done)
@@ -1901,7 +2110,7 @@ load_xref(
         goto repair;
       }
 
-      PDFIO_DEBUG("load_xref: tb.bufptr=%p, tb.bufend=%p, tb.bufptr[0]=0x%02x, tb.bufptr[0]=0x%02x\n", tb.bufptr, tb.bufend, tb.bufptr[0], tb.bufptr[1]);
+      PDFIO_DEBUG("load_xref: tb.bufptr=%p, tb.bufend=%p, tb.bufptr[0]=0x%02x, tb.bufptr[0]=0x%02x\n", (void *)tb.bufptr, (void *)tb.bufend, tb.bufptr[0], tb.bufptr[1]);
       if (tb.bufptr && tb.bufptr < tb.bufend && (tb.bufptr[0] == 0x0d || tb.bufptr[0] == 0x0a))
 	tb.bufptr ++;			// Skip trailing CR or LF after token
 
@@ -2018,20 +2227,26 @@ load_xref(
 	  // Create a placeholder for the object in memory...
 	  if ((current = pdfioFileFindObj(pdf, (size_t)number)) != NULL)
 	  {
-	    PDFIO_DEBUG("load_xref: existing object, prev offset=%u\n", (unsigned)current->offset);
+	    PDFIO_DEBUG("load_xref: existing object, prev offset=%u, generation=%u, new generation=%u\n", (unsigned)current->offset, (unsigned)current->generation, (unsigned)generation);
 
-            if (w[0] == 0 || buffer[0] == 1)
+            if (generation > current->generation)
             {
-              // Location of object...
-	      current->offset = (off_t)offset;
-	    }
-	    else if (number != offset)
-	    {
-	      // Object is part of a stream, offset is the object number...
-	      current->offset = 0;
-	    }
+              // Newer version of an existing object - update the references...
+              current->generation = generation;
 
-	    PDFIO_DEBUG("load_xref: new offset=%u\n", (unsigned)current->offset);
+	      if (w[0] == 0 || buffer[0] == 1)
+	      {
+		// Location of object...
+		current->offset = (off_t)offset;
+	      }
+	      else if (number != offset)
+	      {
+		// Object is part of a stream, offset is the object number...
+		current->offset = 0;
+	      }
+
+	      PDFIO_DEBUG("load_xref: new offset=%u\n", (unsigned)current->offset);
+	    }
 	  }
 
 	  if (w[0] > 0 && buffer[0] == 2)
@@ -2078,12 +2293,18 @@ load_xref(
       {
 	// Save the trailer dictionary and grab the root (catalog) and info
 	// objects...
+	pdfio_obj_t	*encrypt_obj;	// Encryption object
+
 	pdf->trailer_dict = trailer.value.dict;
-	pdf->encrypt_obj  = pdfioDictGetObj(pdf->trailer_dict, "Encrypt");
 	pdf->id_array     = pdfioDictGetArray(pdf->trailer_dict, "ID");
 
+	if ((encrypt_obj = pdfioDictGetObj(pdf->trailer_dict, "Encrypt")) != NULL)
+	  pdf->encrypt_dict = pdfioObjGetDict(encrypt_obj);
+	else
+	  pdf->encrypt_dict = pdfioDictGetDict(pdf->trailer_dict, "Encrypt");
+
 	// If the trailer contains an Encrypt key, try unlocking the file...
-	if (pdf->encrypt_obj && !_pdfioCryptoUnlock(pdf, password_cb, password_data))
+	if (pdf->encrypt_dict && !_pdfioCryptoUnlock(pdf, password_cb, password_data))
 	  return (false);
       }
 
@@ -2094,7 +2315,7 @@ load_xref(
       {
         if ((obj = pdfioFileFindObj(pdf, sobjs[i])) != NULL)
         {
-	  PDFIO_DEBUG("load_xref: Loading compressed object stream %lu (pdf=%p, obj->pdf=%p).\n", (unsigned long)sobjs[i], pdf, obj->pdf);
+	  PDFIO_DEBUG("load_xref: Loading compressed object stream %lu (pdf=%p, obj->pdf=%p).\n", (unsigned long)sobjs[i], (void *)pdf, (void *)obj->pdf);
 
           if (!load_obj_stream(obj))
             return (false);
@@ -2229,12 +2450,18 @@ load_xref(
       {
 	// Save the trailer dictionary and grab the root (catalog) and info
 	// objects...
+	pdfio_obj_t	*encrypt_obj;	// Encryption object
+
 	pdf->trailer_dict = trailer.value.dict;
-	pdf->encrypt_obj  = pdfioDictGetObj(pdf->trailer_dict, "Encrypt");
 	pdf->id_array     = pdfioDictGetArray(pdf->trailer_dict, "ID");
 
+	if ((encrypt_obj  = pdfioDictGetObj(pdf->trailer_dict, "Encrypt")) != NULL)
+	  pdf->encrypt_dict = pdfioObjGetDict(encrypt_obj);
+	else
+	  pdf->encrypt_dict = pdfioDictGetDict(pdf->trailer_dict, "Encrypt");
+
 	// If the trailer contains an Encrypt key, try unlocking the file...
-	if (pdf->encrypt_obj && !_pdfioCryptoUnlock(pdf, password_cb, password_data))
+	if (pdf->encrypt_dict && !_pdfioCryptoUnlock(pdf, password_cb, password_data))
 	  return (false);
       }
     }
@@ -2254,13 +2481,31 @@ load_xref(
     {
       done = true;
     }
-    else if (new_offset == xref_offset)
+    else
     {
-      _pdfioFileError(pdf, "Recursive xref table.");
-      return (false);
-    }
+      // See if we've seen this xref table before...
+      size_t	i;			// Looping var
 
-    xref_offset = new_offset;
+      for (i = 0; i < num_xrefs; i ++)
+      {
+        if (new_offset == xrefs[i])
+	{
+	  // Yes, error out...
+	  _pdfioFileError(pdf, "Recursive xref table.");
+	  return (false);
+	}
+      }
+
+      // No, save it...
+      if (i >= (sizeof(xrefs) / sizeof(xrefs[0])))
+      {
+        // Too many xref tables...
+	_pdfioFileError(pdf, "Too many xref tables.");
+	return (false);
+      }
+
+      xrefs[num_xrefs ++] = xref_offset = new_offset;
+    }
   }
 
   // Once we have all of the xref tables loaded, get the important objects and
@@ -2273,7 +2518,7 @@ load_xref(
     goto repair;
   }
 
-  PDFIO_DEBUG("load_xref: Root=%p(%lu)\n", pdf->root_obj, (unsigned long)pdf->root_obj->number);
+  PDFIO_DEBUG("load_xref: Root=%p(%lu)\n", (void *)pdf->root_obj, (unsigned long)pdf->root_obj->number);
 
   if ((pages_obj = pdfioDictGetObj(pdfioObjGetDict(pdf->root_obj), "Pages")) == NULL)
   {
@@ -2281,7 +2526,7 @@ load_xref(
     goto repair;
   }
 
-  PDFIO_DEBUG("load_xref: Pages=%p(%lu)\n", pdf->root_obj, (unsigned long)pdf->root_obj->number);
+  PDFIO_DEBUG("load_xref: Pages=%p(%lu)\n", (void *)pages_obj, (unsigned long)pages_obj->number);
 
   return (load_pages(pdf, pages_obj, 0));
 
@@ -2324,7 +2569,7 @@ repair_xref(
   pdf->root_obj     = NULL;
   pdf->info_obj     = NULL;
   pdf->pages_obj    = NULL;
-  pdf->encrypt_obj  = NULL;
+  pdf->encrypt_dict = NULL;
 
   // Read from the beginning of the file, looking for objects...
   if ((line_offset = _pdfioFileSeek(pdf, 0, SEEK_SET)) < 0)
@@ -2383,25 +2628,32 @@ repair_xref(
 
 	    _pdfioTokenFlush(&tb);
 
-            if (type && !strcmp(line, "stream"))
+            if (!strcmp(line, "stream"))
             {
               // Possible object or XRef stream...
 	      obj->stream_offset = _pdfioFileTell(pdf);
 
-	      if (!strcmp(type, "ObjStm") && num_sobjs < (sizeof(sobjs) / sizeof(sobjs[0])))
+	      if (type && !strcmp(type, "ObjStm") && num_sobjs < (sizeof(sobjs) / sizeof(sobjs[0])))
 	      {
 	        PDFIO_DEBUG("repair_xref: Object stream...\n");
 		sobjs[num_sobjs] = obj;
 		num_sobjs ++;
 	      }
 
-	      if (!strcmp(type, "XRef") && !pdf->trailer_dict)
+	      if (type && !strcmp(type, "XRef") && !pdf->trailer_dict)
 	      {
 		// Save the trailer dictionary...
+		pdfio_obj_t *encrypt_obj;
+					// Encryption object
+
 	        PDFIO_DEBUG("repair_xref: XRef stream...\n");
 		pdf->trailer_dict = pdfioObjGetDict(obj);
-		pdf->encrypt_obj  = pdfioDictGetObj(pdf->trailer_dict, "Encrypt");
 		pdf->id_array     = pdfioDictGetArray(pdf->trailer_dict, "ID");
+
+		if ((encrypt_obj = pdfioDictGetObj(pdf->trailer_dict, "Encrypt")) != NULL)
+		  pdf->encrypt_dict = pdfioObjGetDict(encrypt_obj);
+		else
+		  pdf->encrypt_dict = pdfioDictGetDict(pdf->trailer_dict, "Encrypt");
 	      }
 	    }
 	    else if (type && !strcmp(line, "endobj"))
@@ -2455,11 +2707,17 @@ repair_xref(
       {
 	// Save the trailer dictionary and grab the root (catalog) and info
 	// objects...
+	pdfio_obj_t	*encrypt_obj;	// Encryption object
+
 	PDFIO_DEBUG("repair_xref: Using this trailer dictionary.\n");
 
 	pdf->trailer_dict = trailer.value.dict;
-	pdf->encrypt_obj  = pdfioDictGetObj(pdf->trailer_dict, "Encrypt");
 	pdf->id_array     = pdfioDictGetArray(pdf->trailer_dict, "ID");
+
+	if ((encrypt_obj = pdfioDictGetObj(pdf->trailer_dict, "Encrypt")) != NULL)
+	  pdf->encrypt_dict = pdfioObjGetDict(encrypt_obj);
+	else
+	  pdf->encrypt_dict = pdfioDictGetDict(pdf->trailer_dict, "Encrypt");
       }
     }
 
@@ -2473,7 +2731,7 @@ repair_xref(
     pdf->trailer_dict = backup_trailer;
 
   // If the trailer contains an Encrypt key, try unlocking the file...
-  if (pdf->encrypt_obj && !_pdfioCryptoUnlock(pdf, password_cb, password_data))
+  if (pdf->encrypt_dict && !_pdfioCryptoUnlock(pdf, password_cb, password_data))
     return (false);
 
   // Load any stream objects...
@@ -2495,7 +2753,7 @@ repair_xref(
     return (false);
   }
 
-  PDFIO_DEBUG("repair_xref: Root=%p(%lu)\n", pdf->root_obj, (unsigned long)pdf->root_obj->number);
+  PDFIO_DEBUG("repair_xref: Root=%p(%lu)\n", (void *)pdf->root_obj, (unsigned long)pdf->root_obj->number);
 
   if ((pages_obj = pdfioDictGetObj(pdfioObjGetDict(pdf->root_obj), "Pages")) == NULL)
   {
@@ -2503,10 +2761,123 @@ repair_xref(
     return (false);
   }
 
-  PDFIO_DEBUG("repair_xref: Pages=%p(%lu)\n", pages_obj, (unsigned long)pages_obj->number);
+  PDFIO_DEBUG("repair_xref: Pages=%p(%lu)\n", (void *)pages_obj, (unsigned long)pages_obj->number);
 
   // Load pages...
   return (load_pages(pdf, pages_obj, 0));
+}
+
+
+//
+// 'write_metadata()' - Write an XMP metadata stream.
+//
+
+static bool				// O - `true` on success, `false` on failure
+write_metadata(pdfio_file_t *pdf)	// I - PDF file
+{
+  pdfio_dict_t	*dict;			// Info/XMP object dictionary
+  pdfio_obj_t	*obj;			// XMP object
+  pdfio_stream_t *st;			// XMP stream
+  bool		status = true;		// Write status
+  const char	*value;			// Value from info dictionary
+  time_t	t;			// Date/time value in seconds
+  char		d[64];			// Date/time string (ISO 8601)
+
+
+  // Create the Metadata object...
+  if ((dict = pdfioDictCreate(pdf)) == NULL)
+    return (false);
+
+  pdfioDictSetName(dict, "Type", "Metadata");
+  pdfioDictSetName(dict, "Subtype", "XML");
+
+  if ((obj = pdfioFileCreateObj(pdf, dict)) == NULL)
+    return (false);
+
+  // Write the XMP stream...
+  if ((st = pdfioObjCreateStream(obj, PDFIO_FILTER_NONE)) == NULL)
+    return (false);
+
+  status &= pdfioStreamPuts(st, "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
+  status &= pdfioStreamPuts(st, "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
+  status &= pdfioStreamPuts(st, "    <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
+
+  status &= pdfioStreamPuts(st, "        <rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\n");
+  t = pdfioFileGetCreationDate(pdf);
+  status &= pdfioStreamPrintf(st, "            <xmp:CreateDate>%H</xmp:CreateDate>\n", get_iso_date(t, d, sizeof(d)));
+  if ((value = pdfioFileGetCreator(pdf)) != NULL)
+    status &= pdfioStreamPrintf(st, "            <xmp:CreatorTool>%H</xmp:CreatorTool>\n", value);
+  status &= pdfioStreamPrintf(st, "            <xmp:MetadataDate>%H</xmp:MetadataDate>\n", d);
+  if ((t = pdfioFileGetModificationDate(pdf)) > 0)
+    status &= pdfioStreamPrintf(st, "            <xmp:ModifyDate>%H</xmp:ModifyDate>\n", get_iso_date(t, d, sizeof(d)));
+  status &= pdfioStreamPuts(st, "        </rdf:Description>\n");
+
+  status &= pdfioStreamPuts(st, "        <rdf:Description rdf:about=\"\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\">\n");
+  status &= pdfioStreamPrintf(st, "            <pdf:Producer>%H</pdf:Producer>\n", pdfioFileGetProducer(pdf));
+  if ((value = pdfioFileGetKeywords(pdf)) != NULL)
+    status &= pdfioStreamPrintf(st, "            <pdf:Keywords>%H</pdf:Keywords>\n", value);
+  status &= pdfioStreamPuts(st, "        </rdf:Description>\n");
+
+  status &= pdfioStreamPuts(st, "        <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n");
+  status &= pdfioStreamPrintf(st, "            <dc:format>application/pdf</dc:format>\n");
+  if ((value = pdfioFileGetTitle(pdf)) != NULL)
+    status &= pdfioStreamPrintf(st, "            <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">%H</rdf:li></rdf:Alt></dc:title>\n", value);
+  if ((value = pdfioFileGetAuthor(pdf)) != NULL)
+    status &= pdfioStreamPrintf(st, "            <dc:creator><rdf:Seq><rdf:li>%H</rdf:li></rdf:Seq></dc:creator>\n", value);
+  if ((value = pdfioFileGetSubject(pdf)) != NULL)
+    status &= pdfioStreamPrintf(st, "            <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">%H</rdf:li></rdf:Alt></dc:description>\n", value);
+  status &= pdfioStreamPuts(st, "        </rdf:Description>\n");
+
+  if (pdf->profile >= _PDFIO_PROFILE_PDFA_1A && pdf->profile <= _PDFIO_PROFILE_PDFA_4)
+  {
+    static const char * const pdfa_versions[] =
+    {
+      "1A", // _PDFIO_PROFILE_PDFA_1A
+      "1B", // _PDFIO_PROFILE_PDFA_1B
+      "2A", // _PDFIO_PROFILE_PDFA_2A
+      "2B", // _PDFIO_PROFILE_PDFA_2B
+      "2U", // _PDFIO_PROFILE_PDFA_2U
+      "3A", // _PDFIO_PROFILE_PDFA_3A
+      "3B", // _PDFIO_PROFILE_PDFA_3B
+      "3U", // _PDFIO_PROFILE_PDFA_3U
+      "4",  // _PDFIO_PROFILE_PDFA_4
+    };
+
+    const char *info = pdfa_versions[pdf->profile - _PDFIO_PROFILE_PDFA_1A];
+
+    status &= pdfioStreamPuts(st, "     <rdf:Description rdf:about=\"\" xmlns:pdfaid=\"http://www.aiim.org/pdfa/ns/id/\">\n");
+    status &= pdfioStreamPrintf(st, "       <pdfaid:part>%c</pdfaid:part>\n", *info);
+    if (info[1])
+       status &= pdfioStreamPrintf(st, "       <pdfaid:conformance>%s</pdfaid:conformance>\n", info + 1);
+    status &= pdfioStreamPuts(st, " </rdf:Description>\n");
+  }
+
+  status &= pdfioStreamPuts(st, "    </rdf:RDF>\n");
+  status &= pdfioStreamPuts(st, "</x:xmpmeta>\n");
+  status &= pdfioStreamPuts(st, "<?xpacket end=\"r\"?>\n");
+
+  status &= pdfioStreamClose(st);
+
+  if (!status)
+    return (false);
+
+  // If we get this far, add the Metadata key/value to the catalog/root object.
+  if (!pdfioDictSetObj(pdfioFileGetCatalog(pdf), "Metadata", obj))
+    return (false);
+
+  // Finally, remove deprecated info key/value pairs for PDF/2.0...
+  if (!strcmp(pdf->version, "2.0") && (dict = pdfioObjGetDict(pdf->info_obj)) != NULL)
+  {
+    pdfioDictClear(dict, "Author");
+    pdfioDictClear(dict, "Creator");
+    pdfioDictClear(dict, "Keywords");
+    pdfioDictClear(dict, "Producer");
+    pdfioDictClear(dict, "Subject");
+    pdfioDictClear(dict, "Title");
+    pdfioDictClear(dict, "Trapped");
+  }
+
+  return (true);
 }
 
 
@@ -2633,7 +3004,7 @@ write_trailer(pdfio_file_t *pdf)	// I - PDF file
 
     // Write the "free" 0 object...
     memset(buffer, 0, sizeof(buffer));
-    pdfioStreamWrite(xref_st, buffer, offsize + 2);
+    pdfioStreamWrite(xref_st, buffer, (size_t)offsize + 2);
 
     // Then write the "allocated" objects...
     buffer[0] = 1;
@@ -2698,7 +3069,7 @@ write_trailer(pdfio_file_t *pdf)	// I - PDF file
             break;
       }
 
-      if (!pdfioStreamWrite(xref_st, buffer, offsize + 2))
+      if (!pdfioStreamWrite(xref_st, buffer, (size_t)offsize + 2))
       {
 	_pdfioFileError(pdf, "Unable to write cross-reference table.");
 	ret = false;
@@ -2763,7 +3134,7 @@ write_trailer(pdfio_file_t *pdf)	// I - PDF file
     }
   }
 
-  if (!_pdfioFilePrintf(pdf, "\nstartxref\n%lu\n%%EOF\n", (unsigned long)xref_offset))
+  if (!_pdfioFilePrintf(pdf, "\nstartxref\n%lu\n%%%%EOF\n", (unsigned long)xref_offset))
   {
     _pdfioFileError(pdf, "Unable to write xref offset.");
     ret = false;

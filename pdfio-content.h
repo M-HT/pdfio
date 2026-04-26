@@ -1,7 +1,7 @@
 //
 // Public content header file for PDFio.
 //
-// Copyright © 2021-2023 by Michael R Sweet.
+// Copyright © 2021-2025 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -23,7 +23,8 @@ typedef enum pdfio_cs_e			// Standard color spaces
 {
   PDFIO_CS_ADOBE,			// AdobeRGB 1998
   PDFIO_CS_P3_D65,			// Display P3
-  PDFIO_CS_SRGB				// sRGB
+  PDFIO_CS_SRGB,			// sRGB
+  PDFIO_CS_CGATS001			// CGATS001 (CMYK)
 } pdfio_cs_t;
 
 typedef enum pdfio_linecap_e		// Line capping modes
@@ -68,8 +69,10 @@ extern pdfio_array_t	*pdfioArrayCreateColorFromPrimaries(pdfio_file_t *pdf, size
 extern pdfio_array_t	*pdfioArrayCreateColorFromStandard(pdfio_file_t *pdf, size_t num_colors, pdfio_cs_t cs);
 
 // PDF content drawing functions...
+extern bool		pdfioContentBeginMarked(pdfio_stream_t *st, const char *tag, pdfio_dict_t *dict) _PDFIO_PUBLIC;
 extern bool		pdfioContentClip(pdfio_stream_t *st, bool even_odd) _PDFIO_PUBLIC;
 extern bool		pdfioContentDrawImage(pdfio_stream_t *st, const char *name, double x, double y, double w, double h) _PDFIO_PUBLIC;
+extern bool		pdfioContentEndMarked(pdfio_stream_t *st) _PDFIO_PUBLIC;
 extern bool		pdfioContentFill(pdfio_stream_t *st, bool even_odd) _PDFIO_PUBLIC;
 extern bool		pdfioContentFillAndStroke(pdfio_stream_t *st, bool even_odd) _PDFIO_PUBLIC;
 extern bool		pdfioContentMatrixConcat(pdfio_stream_t *st, pdfio_matrix_t m) _PDFIO_PUBLIC;
@@ -127,7 +130,9 @@ extern bool		pdfioContentTextShowf(pdfio_stream_t *st, bool unicode, const char 
 extern bool		pdfioContentTextShowJustified(pdfio_stream_t *st, bool unicode, size_t num_fragments, const double *offsets, const char * const *fragments) _PDFIO_PUBLIC;
 
 // Resource helpers...
+extern void		pdfioFileAddOutputIntent(pdfio_file_t *pdf, const char *subtype, const char *condition, const char *cond_id, const char *reg_name, const char *info, pdfio_obj_t *profile) _PDFIO_PUBLIC;
 extern pdfio_obj_t	*pdfioFileCreateFontObjFromBase(pdfio_file_t *pdf, const char *name) _PDFIO_PUBLIC;
+extern pdfio_obj_t	*pdfioFileCreateFontObjFromData(pdfio_file_t *pdf, const void *data, size_t datasize, bool unicode) _PDFIO_PUBLIC;
 extern pdfio_obj_t	*pdfioFileCreateFontObjFromFile(pdfio_file_t *pdf, const char *filename, bool unicode) _PDFIO_PUBLIC;
 extern pdfio_obj_t	*pdfioFileCreateICCObjFromData(pdfio_file_t *pdf, const unsigned char *data, size_t datalen, size_t num_colors) _PDFIO_PUBLIC;
 extern pdfio_obj_t	*pdfioFileCreateICCObjFromFile(pdfio_file_t *pdf, const char *filename, size_t num_colors) _PDFIO_PUBLIC;

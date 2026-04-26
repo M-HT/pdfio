@@ -10,6 +10,7 @@
 #include "pdfio-private.h"
 #include "pdfio-content.h"
 #include "pdfio-base-font-widths.h"
+#include "pdfio-cgats001-compat.h"
 #include "ttf.h"
 #ifdef HAVE_LIBPNG
 #  include <png.h>
@@ -84,6 +85,7 @@ typedef pdfio_obj_t *(*_pdfio_image_func_t)(pdfio_dict_t *dict, int fd);
 static pdfio_obj_t	*copy_jpeg(pdfio_dict_t *dict, int fd);
 static pdfio_obj_t	*copy_png(pdfio_dict_t *dict, int fd);
 static bool		create_cp1252(pdfio_file_t *pdf);
+static pdfio_obj_t	*create_font(pdfio_obj_t *file_obj, ttf_t *font, bool unicode);
 static pdfio_obj_t	*create_image(pdfio_dict_t *dict, const unsigned char *data, size_t width, size_t height, size_t depth, size_t num_colors, bool alpha);
 #ifdef HAVE_LIBPNG
 static void		png_error_func(png_structp pp, png_const_charp message);
@@ -93,7 +95,10 @@ static void		ttf_error_cb(pdfio_file_t *pdf, const char *message);
 #ifndef HAVE_LIBPNG
 static unsigned		update_png_crc(unsigned crc, const unsigned char *buffer, size_t length);
 #endif // !HAVE_LIBPNG
+static bool		write_array(pdfio_stream_t *st, pdfio_array_t *a);
+static bool		write_dict(pdfio_stream_t *st, pdfio_dict_t *dict);
 static bool		write_string(pdfio_stream_t *st, bool unicode, const char *s, bool *newline);
+static bool		write_value(pdfio_stream_t *st, _pdfio_value_t *v);
 
 
 //
@@ -355,7 +360,7 @@ pdfioArrayCreateColorFromPrimaries(
   double	matrix[3][3];		// CIE XYZ transform matrix
 
 
-  PDFIO_DEBUG("pdfioFileCreateCalibratedColorFromPrimaries(pdf=%p, num_colors=%lu, gamma=%.6f, wx=%.6f, wy=%.6f, rx=%.6f, ry=%.6f, gx=%.6f, gy=%.6f, bx=%.6f, by=%.6f)\n", pdf, (unsigned long)num_colors, gamma, wx, wy, rx, ry, gx, gy, bx, by);
+  PDFIO_DEBUG("pdfioFileCreateCalibratedColorFromPrimaries(pdf=%p, num_colors=%lu, gamma=%.6f, wx=%.6f, wy=%.6f, rx=%.6f, ry=%.6f, gx=%.6f, gy=%.6f, bx=%.6f, by=%.6f)\n", (void *)pdf, (unsigned long)num_colors, gamma, wx, wy, rx, ry, gx, gy, bx, by);
 
   // Range check input...
   if (!pdf || (num_colors != 1 && num_colors != 3) || gamma <= 0.0 || ry == 0.0 || gy == 0.0 || by == 0.0)
@@ -405,13 +410,14 @@ pdfioArrayCreateColorFromPrimaries(
 // 'pdfioArrayCreateColorFromStandard()' - Create a color array for a standard color space.
 //
 // This function creates a color array for a standard `PDFIO_CS_` enumerated color space.
-// The "num_colors" argument must be `1` for grayscale and `3` for RGB color.
+// The "num_colors" argument must be `1` for grayscale, `3` for RGB color, and
+// `4` for CMYK color.
 //
 
 pdfio_array_t *				// O - Color array
 pdfioArrayCreateColorFromStandard(
     pdfio_file_t *pdf,			// I - PDF file
-    size_t       num_colors,		// I - Number of colors (1 or 3)
+    size_t       num_colors,		// I - Number of colors (1, 3, or 4)
     pdfio_cs_t   cs)			// I - Color space enumeration
 {
   static const double	adobe_matrix[3][3] = { { 0.57667, 0.18556, 0.18823 }, { 0.29734, 0.62736, 0.07529 }, { 0.02703, 0.07069, 0.99134 } };
@@ -425,7 +431,7 @@ pdfioArrayCreateColorFromStandard(
   {
     return (NULL);
   }
-  else if (num_colors != 1 && num_colors != 3)
+  else if ((cs != PDFIO_CS_CGATS001 && num_colors != 1 && num_colors != 3) || (cs == PDFIO_CS_CGATS001 && num_colors != 4))
   {
     _pdfioFileError(pdf, "Unsupported number of colors %u.", (unsigned)num_colors);
     return (NULL);
@@ -435,15 +441,82 @@ pdfioArrayCreateColorFromStandard(
   {
     case PDFIO_CS_ADOBE :
         return (pdfioArrayCreateColorFromMatrix(pdf, num_colors, 2.2, adobe_matrix, d65_white_point));
+
     case PDFIO_CS_P3_D65 :
         return (pdfioArrayCreateColorFromMatrix(pdf, num_colors, 2.2, p3_d65_matrix, d65_white_point));
+
     case PDFIO_CS_SRGB :
         return (pdfioArrayCreateColorFromMatrix(pdf, num_colors, 2.2, srgb_matrix, d65_white_point));
+
+    case PDFIO_CS_CGATS001 :
+        if (!pdf->cgats001_obj)
+          pdf->cgats001_obj = pdfioFileCreateICCObjFromData(pdf, CGATS001Compat_v2_micro_icc, sizeof(CGATS001Compat_v2_micro_icc), num_colors);
+
+        return (pdfioArrayCreateColorFromICCObj(pdf, pdf->cgats001_obj));
 
     default :
         _pdfioFileError(pdf, "Unsupported color space number %d.", (int)cs);
         return (NULL);
   }
+}
+
+
+//
+// 'pdfioContentBeginMarked()' - Start marked content with an optional dictionary.
+//
+// This function starts an area of marked content with an optional dictionary.
+// It must be paired with a call to the @link pdfioContentEndMarked@ function.
+//
+// The "tag" argument specifies the tag name string for the content such as "P"
+// for a paragraph, "H1" for a top-level heading, and so forth.  The "dict"
+// argument specifies an optional dictionary of properties for the content such
+// as the marked content identifier ("MCID") number.
+//
+// Calling this function sets the "Marked" key in the "MarkInfo" dictionary of
+// the document catalog.  The caller is responsible for setting the
+// "StructTreeRoot" dictionary when creating marked content.
+//
+// @since PDFio 1.6@
+//
+
+bool					// O - `true` on success, `false` on failure
+pdfioContentBeginMarked(
+    pdfio_stream_t *st,			// I - Stream
+    const char     *tag,		// I - Tag name of marked content
+    pdfio_dict_t   *dict)		// I - Dictionary of parameters or `NULL` if none
+{
+  if (!st || !tag)
+    return (false);
+
+  // Send the BDC/BMC command...
+  if (!pdfioStreamPrintf(st, "%N", tag))
+    return (false);
+
+  if (dict)
+  {
+    // Write dictionary before BDC operator...
+    if (!write_dict(st, dict))
+      return (false);
+
+    if (!pdfioStreamPuts(st, "BDC\n"))
+      return (false);
+  }
+  else
+  {
+    // No dictionary so use the BMC operator...
+    if (!pdfioStreamPuts(st, " BMC\n"))
+      return (false);
+  }
+
+  // Make sure we have the MarkInfo dictionary in the catalog...
+  if (!st->pdf->markinfo)
+  {
+    st->pdf->markinfo = pdfioDictCreate(st->pdf);
+    pdfioDictSetBoolean(st->pdf->markinfo, "Marked", true);
+    pdfioDictSetDict(pdfioObjGetDict(st->pdf->root_obj), "MarkInfo", st->pdf->markinfo);
+  }
+
+  return (true);
 }
 
 
@@ -477,6 +550,23 @@ pdfioContentDrawImage(
     double         height)		// I - Height of image
 {
   return (pdfioStreamPrintf(st, "q %.6f 0 0 %.6f %.6f %.6f cm%N Do Q\n", width, height, x, y, name));
+}
+
+
+//
+// 'pdfioContentEndMarked()' - End marked content.
+//
+// This function ends an area of marked content that was started using the
+// @link pdfioContentBeginMarked@ function.
+//
+// @since PDFio 1.6@
+//
+
+bool					// O - `true` on success, `false` on failure
+pdfioContentEndMarked(
+    pdfio_stream_t *st)			// I - Stream
+{
+  return (pdfioStreamPuts(st, "EMC\n"));
 }
 
 
@@ -1489,6 +1579,103 @@ pdfioContentTextShowJustified(
 
 
 //
+// 'pdfioFileAddOutputIntent()' - Add an OutputIntent to a file.
+//
+// This function adds an OutputIntent dictionary to the PDF file catalog.
+// The "subtype" argument specifies the intent subtype and is typically
+// "GTS_PDFX" for PDF/X, "GTS_PDFA1" for PDF/A, or "ISO_PDFE1" for PDF/E.
+// Passing `NULL` defaults the subtype to "GTS_PDFA1".
+//
+// The "condition" argument specifies a short name for the output intent, while
+// the "info" argument specifies a longer description for the output intent.
+// Both can be `NULL` to omit this information.
+//
+// The "cond_id" argument specifies a unique identifier such as a registration
+// ("CGATS001") or color space name ("sRGB").  The "reg_name" argument provides
+// a URL for the identifier.
+//
+// The "profile" argument specifies an ICC profile object for the output
+// condition.  If `NULL`, the PDF consumer will attempt to look up the correct
+// profile using the "cond_id" value.
+//
+// @since PDFio 1.6@
+//
+
+void
+pdfioFileAddOutputIntent(
+    pdfio_file_t *pdf,			// I - PDF file
+    const char   *subtype,		// I - Intent subtype (standard)
+    const char   *condition,		// I - Condition name or `NULL` for none
+    const char   *cond_id,		// I - Identifier such as registration name or `NULL` for none
+    const char   *reg_name,		// I - Registry URL or `NULL` for none
+    const char   *info,			// I - Description or `NULL` for none
+    pdfio_obj_t  *profile)		// I - ICC profile object or `NULL` for none
+{
+  pdfio_array_t	*output_intents;	// OutputIntents array in catalog
+  pdfio_dict_t	*intent;		// Current output intent
+
+
+  // Range check input...
+  if (!pdf)
+    return;
+
+  if (!subtype)
+  {
+    _pdfioFileError(pdf, "Output intent subtype cannot be NULL.");
+    return;
+  }
+
+  // Get the OutputIntents array...
+  if ((output_intents = pdfioDictGetArray(pdfioFileGetCatalog(pdf), "OutputIntents")) != NULL)
+  {
+    // See if we already have an intent for the given subtype...
+    size_t	i,			// Looping var
+		count;			// Number of output intents
+
+    for (i = 0, count = pdfioArrayGetSize(output_intents); i < count; i ++)
+    {
+      if ((intent = pdfioArrayGetDict(output_intents, i)) != NULL)
+      {
+        const char *csubtype = pdfioDictGetName(intent, "S");
+					// Current subtype
+
+        if (csubtype && !strcmp(csubtype, subtype))
+          return;
+      }
+    }
+  }
+  else
+  {
+    // Create the OutputIntents array...
+    if ((output_intents = pdfioArrayCreate(pdf)) == NULL)
+      return;
+
+    pdfioDictSetArray(pdfioFileGetCatalog(pdf), "OutputIntents", output_intents);
+  }
+
+  // Create an intent dictionary...
+  if ((intent = pdfioDictCreate(pdf)) == NULL)
+    return;
+
+  pdfioDictSetName(intent, "Type", "OutputIntent");
+  pdfioDictSetName(intent, "S", pdfioStringCreate(pdf, subtype));
+  if (condition)
+    pdfioDictSetString(intent, "OutputCondition", pdfioStringCreate(pdf, condition));
+  if (cond_id)
+    pdfioDictSetString(intent, "OutputConditionIdentifier", pdfioStringCreate(pdf, cond_id));
+  if (reg_name)
+    pdfioDictSetString(intent, "RegistryName", pdfioStringCreate(pdf, reg_name));
+  if (info)
+    pdfioDictSetString(intent, "Info", pdfioStringCreate(pdf, info));
+  if (profile)
+    pdfioDictSetObj(intent, "DestOutputProfile", profile);
+
+  // Add the dictionary to the output intents...
+  pdfioArrayAppendDict(output_intents, intent);
+}
+
+
+//
 // 'pdfioFileCreateBaseFontObj()' - Create one of the base 14 PDF fonts.
 //
 // This function creates one of the base 14 PDF fonts. The "name" parameter
@@ -1513,6 +1700,8 @@ pdfioContentTextShowJustified(
 // (ISO-8859-1 with additional characters such as the Euro symbol) subset of
 // Unicode.
 //
+// > Note: This function cannot be used when producing PDF/A files.
+//
 
 pdfio_obj_t *				// O - Font object
 pdfioFileCreateFontObjFromBase(
@@ -1523,6 +1712,23 @@ pdfioFileCreateFontObjFromBase(
   pdfio_obj_t	*obj;			// Font object
 
 
+  // Range check input...
+  if (!pdf)
+    return (NULL);
+
+  if (!name)
+  {
+    _pdfioFileError(pdf, "No base font name specified.");
+    return (NULL);
+  }
+
+  if (pdf->profile >= _PDFIO_PROFILE_PDFA_1A && pdf->profile <= _PDFIO_PROFILE_PDFA_4)
+  {
+    _pdfioFileError(pdf, "Base fonts are not allowed in PDF/A files; use pdfioFileCreateFontObjFromFile to embed a font.");
+    return (NULL);
+  }
+
+  // Create a base font object...
   if ((dict = pdfioDictCreate(pdf)) == NULL)
     return (NULL);
 
@@ -1546,9 +1752,86 @@ pdfioFileCreateFontObjFromBase(
 
 
 //
-// 'pdfioFileCreateFontObjFromFile()' - Add a font object to a PDF file.
+// 'pdfioFileCreateFontObjFromData()' - Add a font in memory to a PDF file.
 //
-// This function embeds a TrueType/OpenType font into a PDF file.  The
+// This function embeds TrueType/OpenType font data into a PDF file.  The
+// "unicode" parameter controls whether the font is encoded for two-byte
+// characters (potentially full Unicode, but more typically a subset)
+// or to only support the Windows CP1252 (ISO-8859-1 with additional
+// characters such as the Euro symbol) subset of Unicode.
+//
+// @since PDFio v1.6@
+//
+
+pdfio_obj_t *				// O - Font object
+pdfioFileCreateFontObjFromData(
+    pdfio_file_t *pdf,			// I - PDF file
+    const void   *data,			// I - Font data in memory
+    size_t       datasize,		// I - Size of font in memory
+    bool         unicode)		// I - Force Unicode
+{
+  ttf_t		*font;			// TrueType font
+  pdfio_obj_t	*obj,			// Font object
+		*file_obj = NULL;	// File object
+  pdfio_dict_t	*file;			// Font file dictionary
+  pdfio_stream_t *st = NULL;		// Font stream
+
+
+  // Range check input...
+  if (!pdf)
+    return (NULL);
+
+  if (!data || !datasize)
+  {
+    _pdfioFileError(pdf, "No TrueType/OpenType data specified.");
+    return (NULL);
+  }
+
+  // Create a TrueType font object from the data...
+  if ((font = ttfCreateData(data, datasize, 0, (ttf_err_cb_t)ttf_error_cb, pdf)) == NULL)
+    return (NULL);
+
+  // Create the font file dictionary and object...
+  if ((file = pdfioDictCreate(pdf)) == NULL)
+    goto error;
+
+  pdfioDictSetName(file, "Filter", "FlateDecode");
+
+  if ((file_obj = pdfioFileCreateObj(pdf, file)) == NULL)
+    goto error;
+
+  if ((st = pdfioObjCreateStream(file_obj, PDFIO_FILTER_FLATE)) == NULL)
+    goto error;
+
+  if (!pdfioStreamWrite(st, data, datasize))
+    goto error;
+
+  pdfioStreamClose(st);
+
+  // Create the font object...
+  if ((obj = create_font(file_obj, font, unicode)) == NULL)
+    ttfDelete(font);
+
+  return (obj);
+
+  // If we get here we had an unrecoverable error...
+  error:
+
+  if (st)
+    pdfioStreamClose(st);
+  else
+    pdfioObjClose(file_obj);
+
+  ttfDelete(font);
+
+  return (NULL);
+}
+
+
+//
+// 'pdfioFileCreateFontObjFromFile()' - Add a font file to a PDF file.
+//
+// This function embeds a TrueType/OpenType font file into a PDF file.  The
 // "unicode" parameter controls whether the font is encoded for two-byte
 // characters (potentially full Unicode, but more typically a subset)
 // or to only support the Windows CP1252 (ISO-8859-1 with additional
@@ -1562,16 +1845,10 @@ pdfioFileCreateFontObjFromFile(
     bool         unicode)		// I - Force Unicode
 {
   ttf_t		*font;			// TrueType font
-  ttf_rect_t	bounds;			// Font bounds
-  pdfio_dict_t	*dict,			// Font dictionary
-		*desc,			// Font descriptor
-		*file;			// Font file dictionary
-  pdfio_obj_t	*obj = NULL,		// Font object
-		*desc_obj,		// Font descriptor object
-		*file_obj;		// Font file object
-  const char	*basefont;		// Base font name
-  pdfio_array_t	*bbox;			// Font bounding box array
-  pdfio_stream_t *st;			// Font stream
+  pdfio_dict_t	*file;			// Font file dictionary
+  pdfio_obj_t	*obj,			// Font object
+		*file_obj = NULL;	// Font file object
+  pdfio_stream_t *st = NULL;		// Font stream
   int		fd = -1;		// File
   unsigned char	buffer[16384];		// Read buffer
   ssize_t	bytes;			// Bytes read
@@ -1594,361 +1871,50 @@ pdfioFileCreateFontObjFromFile(
   }
 
   if ((font = ttfCreate(filename, 0, (ttf_err_cb_t)ttf_error_cb, pdf)) == NULL)
-  {
-    close(fd);
-    return (NULL);
-  }
+    goto error;
 
   // Create the font file dictionary and object...
   if ((file = pdfioDictCreate(pdf)) == NULL)
-    goto done;
+    goto error;
 
   pdfioDictSetName(file, "Filter", "FlateDecode");
 
   if ((file_obj = pdfioFileCreateObj(pdf, file)) == NULL)
-    goto done;
+    goto error;
 
   if ((st = pdfioObjCreateStream(file_obj, PDFIO_FILTER_FLATE)) == NULL)
-    goto done;
+    goto error;
 
   while ((bytes = read(fd, buffer, sizeof(buffer))) > 0)
   {
     if (!pdfioStreamWrite(st, buffer, (size_t)bytes))
-    {
-      pdfioStreamClose(st);
-      goto done;
-    }
+      goto error;
   }
 
   close(fd);
-  fd = -1;
+
   pdfioStreamClose(st);
 
-  // Create the font descriptor dictionary and object...
-  if ((bbox = pdfioArrayCreate(pdf)) == NULL)
-    goto done;
+  // Create the font object...
+  if ((obj = create_font(file_obj, font, unicode)) == NULL)
+    ttfDelete(font);
 
-  ttfGetBounds(font, &bounds);
+  return (obj);
 
-  pdfioArrayAppendNumber(bbox, bounds.left);
-  pdfioArrayAppendNumber(bbox, bounds.bottom);
-  pdfioArrayAppendNumber(bbox, bounds.right);
-  pdfioArrayAppendNumber(bbox, bounds.top);
-
-  if ((desc = pdfioDictCreate(pdf)) == NULL)
-    goto done;
-
-  basefont = pdfioStringCreate(pdf, ttfGetPostScriptName(font));
-
-  pdfioDictSetName(desc, "Type", "FontDescriptor");
-  pdfioDictSetName(desc, "FontName", basefont);
-  pdfioDictSetObj(desc, "FontFile2", file_obj);
-  pdfioDictSetNumber(desc, "Flags", ttfIsFixedPitch(font) ? 0x21 : 0x20);
-  pdfioDictSetArray(desc, "FontBBox", bbox);
-  pdfioDictSetNumber(desc, "ItalicAngle", ttfGetItalicAngle(font));
-  pdfioDictSetNumber(desc, "Ascent", ttfGetAscent(font));
-  pdfioDictSetNumber(desc, "Descent", ttfGetDescent(font));
-  pdfioDictSetNumber(desc, "CapHeight", ttfGetCapHeight(font));
-  pdfioDictSetNumber(desc, "XHeight", ttfGetXHeight(font));
-  // Note: No TrueType value exists for this but PDF requires it, so we
-  // calculate a generic value from 50 to 250 based on the weight...
-  pdfioDictSetNumber(desc, "StemV", ttfGetWeight(font) / 4 + 25);
-
-  if ((desc_obj = pdfioFileCreateObj(pdf, desc)) == NULL)
-    goto done;
-
-  pdfioObjClose(desc_obj);
-
-  if (unicode)
-  {
-    // Unicode (CID) font...
-    pdfio_dict_t	*cid2gid,	// CIDToGIDMap dictionary
-			*to_unicode;	// ToUnicode dictionary
-    pdfio_obj_t		*cid2gid_obj,	// CIDToGIDMap object
-			*to_unicode_obj;// ToUnicode object
-    size_t		i, j,		// Looping vars
-			num_cmap;	// Number of CMap entries
-    const int		*cmap;		// CMap entries
-    int			min_glyph,	// First glyph
-			max_glyph;	// Last glyph
-    unsigned short	glyphs[65536];	// Glyph to Unicode mapping
-    unsigned char	*bufptr,	// Pointer into buffer
-			*bufend;	// End of buffer
-    pdfio_dict_t	*type2;		// CIDFontType2 font dictionary
-    pdfio_obj_t		*type2_obj;	// CIDFontType2 font object
-    pdfio_array_t	*descendants;	// Decendant font list
-    pdfio_dict_t	*sidict;	// CIDSystemInfo dictionary
-    pdfio_array_t	*w_array,	// Width array
-			*temp_array;	// Temporary width sub-array
-    int			w0, w1;		// Widths
-
-    // Create a CIDSystemInfo mapping to Adobe UCS2 v0 (Unicode)
-    if ((sidict = pdfioDictCreate(pdf)) == NULL)
-      goto done;
-
-    pdfioDictSetString(sidict, "Registry", "Adobe");
-    pdfioDictSetString(sidict, "Ordering", "Identity");
-    pdfioDictSetNumber(sidict, "Supplement", 0);
-
-    // Create a CIDToGIDMap object for the Unicode font...
-    if ((cid2gid = pdfioDictCreate(pdf)) == NULL)
-      goto done;
-
-#ifndef DEBUG
-    pdfioDictSetName(cid2gid, "Filter", "FlateDecode");
-#endif // !DEBUG
-
-    if ((cid2gid_obj = pdfioFileCreateObj(pdf, cid2gid)) == NULL)
-      goto done;
-
-#ifdef DEBUG
-    if ((st = pdfioObjCreateStream(cid2gid_obj, PDFIO_FILTER_NONE)) == NULL)
-#else
-    if ((st = pdfioObjCreateStream(cid2gid_obj, PDFIO_FILTER_FLATE)) == NULL)
-#endif // DEBUG
-      goto done;
-
-    cmap      = ttfGetCMap(font, &num_cmap);
-    min_glyph = 65536;
-    max_glyph = 0;
-    memset(glyphs, 0, sizeof(glyphs));
-
-    PDFIO_DEBUG("pdfioFileCreateFontObjFromFile: num_cmap=%u\n", (unsigned)num_cmap);
-
-    for (i = 0, bufptr = buffer, bufend = buffer + sizeof(buffer); i < num_cmap; i ++)
-    {
-      PDFIO_DEBUG("pdfioFileCreateFontObjFromFile: cmap[%u]=%d\n", (unsigned)i, cmap[i]);
-      if (cmap[i] < 0 || cmap[i] >= (int)(sizeof(glyphs) / sizeof(glyphs[0])))
-      {
-        // Map undefined glyph to .notdef...
-        *bufptr++ = 0;
-        *bufptr++ = 0;
-      }
-      else
-      {
-        // Map to specified glyph...
-        *bufptr++ = (unsigned char)(cmap[i] >> 8);
-        *bufptr++ = (unsigned char)(cmap[i] & 255);
-
-        glyphs[cmap[i]] = (unsigned short)i;
-        if (cmap[i] < min_glyph)
-          min_glyph = cmap[i];
-        if (cmap[i] > max_glyph)
-          max_glyph = cmap[i];
-      }
-
-      if (bufptr >= bufend)
-      {
-        // Flush buffer...
-        if (!pdfioStreamWrite(st, buffer, (size_t)(bufptr - buffer)))
-        {
-	  pdfioStreamClose(st);
-	  goto done;
-        }
-
-        bufptr = buffer;
-      }
-    }
-
-    if (bufptr > buffer)
-    {
-      // Flush buffer...
-      if (!pdfioStreamWrite(st, buffer, (size_t)(bufptr - buffer)))
-      {
-	pdfioStreamClose(st);
-	goto done;
-      }
-    }
-
-    pdfioStreamClose(st);
-
-    // ToUnicode mapping object
-    to_unicode = pdfioDictCreate(pdf);
-    pdfioDictSetName(to_unicode, "Type", "CMap");
-    pdfioDictSetName(to_unicode, "CMapName", "Adobe-Identity-UCS2");
-    pdfioDictSetDict(to_unicode, "CIDSystemInfo", sidict);
-
-#ifndef DEBUG
-    pdfioDictSetName(to_unicode, "Filter", "FlateDecode");
-#endif // !DEBUG
-
-    if ((to_unicode_obj = pdfioFileCreateObj(pdf, to_unicode)) == NULL)
-      goto done;
-
-#ifdef DEBUG
-    if ((st = pdfioObjCreateStream(to_unicode_obj, PDFIO_FILTER_NONE)) == NULL)
-#else
-    if ((st = pdfioObjCreateStream(to_unicode_obj, PDFIO_FILTER_FLATE)) == NULL)
-#endif // DEBUG
-      goto done;
-
-    pdfioStreamPuts(st,
-		    "stream\n"
-		    "/CIDInit /ProcSet findresource begin\n"
-		    "12 dict begin\n"
-		    "begincmap\n"
-		    "/CIDSystemInfo<<\n"
-		    "/Registry (Adobe)\n"
-		    "/Ordering (UCS2)\n"
-		    "/Supplement 0\n"
-		    ">> def\n"
-		    "/CMapName /Adobe-Identity-UCS2 def\n"
-		    "/CMapType 2 def\n"
-		    "1 begincodespacerange\n"
-		    "<0000> <FFFF>\n"
-		    "endcodespacerange\n"
-                    "endcmap\n"
-                    "CMapName currentdict /CMap defineresource pop\n"
-                    "end\n"
-                    "end\n");
-
-    pdfioStreamClose(st);
-
-    // Create a CIDFontType2 dictionary for the Unicode font...
-    if ((type2 = pdfioDictCreate(pdf)) == NULL)
-      goto done;
-
-    // Width array
-    if ((w_array = pdfioArrayCreate(pdf)) == NULL)
-      goto done;
-
-    for (i = 0, w0 = ttfGetWidth(font, 0), w1 = 0; i < 65536; w0 = w1)
-    {
-      for (j = 1; (i + j) < 65536; j ++)
-      {
-        if ((w1 = ttfGetWidth(font, (int)(i + j))) != w0)
-          break;
-      }
-
-      if (j >= 4)
-      {
-        // Encode a long sequence of zeros...
-	// Encode a repeating sequence...
-	pdfioArrayAppendNumber(w_array, (double)i);
-	pdfioArrayAppendNumber(w_array, (double)(i + j - 1));
-	pdfioArrayAppendNumber(w_array, w0);
-
-	i += j;
-      }
-      else
-      {
-        // Encode a non-repeating sequence...
-        pdfioArrayAppendNumber(w_array, (double)i);
-
-        if ((temp_array = pdfioArrayCreate(pdf)) == NULL)
-	  goto done;
-
-        pdfioArrayAppendNumber(temp_array, w0);
-        for (i ++; i < 65536 && pdfioArrayGetSize(temp_array) < 8191; i ++, w0 = w1)
-        {
-          if ((w1 = ttfGetWidth(font, (int)i)) == w0 && i < 65530)
-          {
-            for (j = 1; j < 4; j ++)
-            {
-              if (ttfGetWidth(font, (int)(i + j)) != w0)
-                break;
-            }
-
-            if (j >= 4)
-	      break;
-	  }
-
-	  pdfioArrayAppendNumber(temp_array, w1);
-        }
-
-        pdfioArrayAppendArray(w_array, temp_array);
-      }
-    }
-
-    // Then the dictionary for the CID base font...
-    pdfioDictSetName(type2, "Type", "Font");
-    pdfioDictSetName(type2, "Subtype", "CIDFontType2");
-    pdfioDictSetName(type2, "BaseFont", basefont);
-    pdfioDictSetDict(type2, "CIDSystemInfo", sidict);
-    pdfioDictSetObj(type2, "CIDToGIDMap", cid2gid_obj);
-    pdfioDictSetObj(type2, "FontDescriptor", desc_obj);
-    pdfioDictSetArray(type2, "W", w_array);
-
-    if ((type2_obj = pdfioFileCreateObj(pdf, type2)) == NULL)
-      goto done;
-
-    pdfioObjClose(type2_obj);
-
-    // Create a Type 0 font object...
-    if ((descendants = pdfioArrayCreate(pdf)) == NULL)
-      goto done;
-
-    pdfioArrayAppendObj(descendants, type2_obj);
-
-    if ((dict = pdfioDictCreate(pdf)) == NULL)
-      goto done;
-
-    pdfioDictSetName(dict, "Type", "Font");
-    pdfioDictSetName(dict, "Subtype", "Type0");
-    pdfioDictSetName(dict, "BaseFont", basefont);
-    pdfioDictSetArray(dict, "DescendantFonts", descendants);
-    pdfioDictSetName(dict, "Encoding", "Identity-H");
-    pdfioDictSetObj(dict, "ToUnicode", to_unicode_obj);
-
-    if ((obj = pdfioFileCreateObj(pdf, dict)) != NULL)
-      pdfioObjClose(obj);
-  }
-  else
-  {
-    // Simple (CP1282 or custom encoding) 8-bit font...
-    int			ch;		// Character
-    pdfio_array_t	*w_array;	// Widths array
-
-    if (ttfGetMaxChar(font) >= 255 && !pdf->cp1252_obj && !create_cp1252(pdf))
-      goto done;
-
-    // Create a TrueType font object...
-    if ((dict = pdfioDictCreate(pdf)) == NULL)
-      goto done;
-
-    pdfioDictSetName(dict, "Type", "Font");
-    pdfioDictSetName(dict, "Subtype", "TrueType");
-    pdfioDictSetName(dict, "BaseFont", basefont);
-    pdfioDictSetNumber(dict, "FirstChar", 32);
-    if (ttfGetMaxChar(font) >= 255)
-    {
-      pdfioDictSetObj(dict, "Encoding", pdf->cp1252_obj);
-      pdfioDictSetNumber(dict, "LastChar", 255);
-    }
-    else
-    {
-      pdfioDictSetNumber(dict, "LastChar", ttfGetMaxChar(font));
-    }
-
-    // Build a Widths array for CP1252/WinAnsiEncoding
-    if ((w_array = pdfioArrayCreate(pdf)) == NULL)
-      goto done;
-
-    for (ch = 32; ch < 256 && ch < ttfGetMaxChar(font); ch ++)
-    {
-      if (ch >= 0x80 && ch < 0xa0)
-	pdfioArrayAppendNumber(w_array, ttfGetWidth(font, _pdfio_cp1252[ch - 0x80]));
-      else
-	pdfioArrayAppendNumber(w_array, ttfGetWidth(font, ch));
-    }
-
-    pdfioDictSetArray(dict, "Widths", w_array);
-
-    pdfioDictSetObj(dict, "FontDescriptor", desc_obj);
-
-    if ((obj = pdfioFileCreateObj(pdf, dict)) != NULL)
-      pdfioObjClose(obj);
-  }
-
-  done:
+  // If we get here we had an unrecoverable error...
+  error:
 
   if (fd >= 0)
     close(fd);
 
-  if (obj)
-    _pdfioObjSetExtension(obj, font, (_pdfio_extfree_t)ttfDelete);
+  if (st)
+    pdfioStreamClose(st);
+  else
+    pdfioObjClose(file_obj);
 
-  return (obj);
+  ttfDelete(font);
+
+  return (NULL);
 }
 
 
@@ -2100,8 +2066,9 @@ pdfioFileCreateICCObjFromFile(
 // "interpolate" parameter specifies whether to interpolate when scaling the
 // image on the page.
 //
-// Note: When creating an image object with alpha, a second image object is
-// created to hold the "soft mask" data for the primary image.
+// > Note: When creating an image object with alpha, a second image object is
+// > created to hold the "soft mask" data for the primary image.  PDF/A-1
+// > files do not support alpha-based transparency.
 //
 
 pdfio_obj_t *				// O - Object
@@ -2125,6 +2092,12 @@ pdfioFileCreateImageObjFromData(
     "DeviceCMYK"
   };
 
+
+  if (pdf && pdf->profile >= _PDFIO_PROFILE_PDFA_1A && pdf->profile <= _PDFIO_PROFILE_PDFA_1B && alpha)
+  {
+    _pdfioFileError(pdf, "Images with transparency (alpha channels) are not allowed in PDF/A-1 files.");
+    return (NULL);
+  }
 
   // Range check input...
   if (!pdf || !data || !width || !height || num_colors < 1 || num_colors == 2 || num_colors > 4)
@@ -2159,9 +2132,8 @@ pdfioFileCreateImageObjFromData(
 // the "interpolate" parameter specifies whether to interpolate when scaling the
 // image on the page.
 //
-// > Note: Currently PNG support is limited to grayscale, RGB, or indexed files
-// > without interlacing or alpha.  Transparency (masking) based on color/index
-// > is supported.
+// > Note: PNG files containing transparency cannot be used when producing
+// > PDF/A files.
 //
 
 pdfio_obj_t *				// O - Object
@@ -2389,6 +2361,10 @@ pdfioPageDictAddColorSpace(
       return (false);
   }
 
+  // See if this name is already set...
+  if (_pdfioDictGetValue(colorspace, name))
+    return (false);			// Yes, return false
+
   // Now set the color space reference and return...
   return (pdfioDictSetArray(colorspace, name, data));
 }
@@ -2580,9 +2556,14 @@ copy_jpeg(pdfio_dict_t *dict,		// I - Dictionary
 
       // Expand our ICC buffer...
       if ((icc_temp = realloc(icc_data, icc_datalen + length)) == NULL)
+      {
+        free(icc_data);
 	return (NULL);
+      }
       else
+      {
 	icc_data = icc_temp;
+      }
 
       // Read the chunk into the ICC buffer...
       do
@@ -2651,7 +2632,7 @@ copy_jpeg(pdfio_dict_t *dict,		// I - Dictionary
     }
   }
 
-  if (width == 0 || height == 0 || (num_colors != 1 && num_colors != 3))
+  if (width == 0 || height == 0 || (num_colors != 1 && num_colors != 3 && num_colors != 4))
   {
     _pdfioFileError(dict->pdf, "Unable to find JPEG dimensions or image data.");
     goto finish;
@@ -2669,8 +2650,11 @@ copy_jpeg(pdfio_dict_t *dict,		// I - Dictionary
   }
   else //if (pdfioDictGetArray(dict, "ColorSpace") == NULL)
   {
-    // The default JPEG color space is sRGB...
-    pdfioDictSetArray(dict, "ColorSpace", pdfioArrayCreateColorFromStandard(dict->pdf, num_colors, PDFIO_CS_SRGB));
+    // The default JPEG color space is sRGB or CGATS001 (CMYK)...
+    if (num_colors == 4)
+      pdfioDictSetArray(dict, "ColorSpace", pdfioArrayCreateColorFromStandard(dict->pdf, num_colors, PDFIO_CS_CGATS001));
+    else
+      pdfioDictSetArray(dict, "ColorSpace", pdfioArrayCreateColorFromStandard(dict->pdf, num_colors, PDFIO_CS_SRGB));
   }
 
   obj = pdfioFileCreateObj(dict->pdf, dict);
@@ -2718,7 +2702,8 @@ copy_png(pdfio_dict_t *dict,		// I - Dictionary
   png_infop	info = NULL;		// PNG info pointers
   png_bytep	*rows = NULL;		// PNG row pointers
   unsigned char	*pixels = NULL;		// PNG image data
-  unsigned	i,			// Looping var
+  int		i;			// Looping var
+  unsigned	y,			// Row
 		color_type,		// PNG color mode
 		width,			// Width in columns
 		height,			// Height in lines
@@ -2780,6 +2765,12 @@ copy_png(pdfio_dict_t *dict,		// I - Dictionary
   depth      = png_get_bit_depth(pp, info);
   color_type = png_get_color_type(pp, info);
 
+  if (dict->pdf->profile >= _PDFIO_PROFILE_PDFA_1A && dict->pdf->profile <= _PDFIO_PROFILE_PDFA_1B && (color_type & PNG_COLOR_MASK_ALPHA))
+  {
+    _pdfioFileError(dict->pdf, "PNG images with transparency (alpha channels) are not allowed in PDF/A-1 files.");
+    goto finish_png;
+  }
+
   if (color_type & PNG_COLOR_MASK_PALETTE)
     num_colors = 1;
   else if (color_type & PNG_COLOR_MASK_COLOR)
@@ -2810,8 +2801,8 @@ copy_png(pdfio_dict_t *dict,		// I - Dictionary
     goto finish_png;
   }
 
-  for (i = 0; i < height; i ++)
-    rows[i] = pixels + i * linesize;
+  for (y = 0; y < height; y ++)
+    rows[y] = pixels + y * linesize;
 
   // Read the image...
   for (i = png_set_interlace_handling(pp); i > 0; i --)
@@ -2825,7 +2816,7 @@ copy_png(pdfio_dict_t *dict,		// I - Dictionary
   // Grab any color space/palette information...
   if (png_get_PLTE(pp, info, &palette, &num_palette))
   {
-    pdfioDictSetArray(dict, "ColorSpace", pdfioArrayCreateColorFromPalette(dict->pdf, num_palette, (unsigned char *)palette));
+    pdfioDictSetArray(dict, "ColorSpace", pdfioArrayCreateColorFromPalette(dict->pdf, (size_t)num_palette, (unsigned char *)palette));
   }
   else if (png_get_iCCP(pp, info, &icc_name, /*compression_type*/NULL, &icc_data, &icc_datalen))
   {
@@ -2898,7 +2889,6 @@ copy_png(pdfio_dict_t *dict,		// I - Dictionary
 
   if (pp && info)
   {
-    png_read_end(pp, info);
     png_destroy_read_struct(&pp, &info, NULL);
 
     pp   = NULL;
@@ -3320,6 +3310,352 @@ create_cp1252(pdfio_file_t *pdf)	// I - PDF file
 
 
 //
+// 'create_font()' - Create the object for a TrueType font.
+//
+
+static pdfio_obj_t *			// O - Font object
+create_font(pdfio_obj_t *file_obj,	// I - Font file object
+            ttf_t       *font,		// I - TrueType font
+            bool        unicode)	// I - Force Unicode
+{
+  ttf_rect_t	bounds;			// Font bounds
+  pdfio_dict_t	*dict,			// Font dictionary
+		*desc;			// Font descriptor
+  pdfio_obj_t	*obj = NULL,		// Font object
+		*desc_obj;		// Font descriptor object
+  const char	*basefont;		// Base font name
+  pdfio_array_t	*bbox;			// Font bounding box array
+  pdfio_stream_t *st;			// Font stream
+
+
+  // Create the font descriptor dictionary and object...
+  if ((bbox = pdfioArrayCreate(file_obj->pdf)) == NULL)
+    goto done;
+
+  ttfGetBounds(font, &bounds);
+
+  pdfioArrayAppendNumber(bbox, bounds.left);
+  pdfioArrayAppendNumber(bbox, bounds.bottom);
+  pdfioArrayAppendNumber(bbox, bounds.right);
+  pdfioArrayAppendNumber(bbox, bounds.top);
+
+  if ((desc = pdfioDictCreate(file_obj->pdf)) == NULL)
+    goto done;
+
+  if ((basefont = pdfioStringCreate(file_obj->pdf, ttfGetPostScriptName(font))) == NULL)
+    goto done;
+
+  pdfioDictSetName(desc, "Type", "FontDescriptor");
+  pdfioDictSetName(desc, "FontName", basefont);
+  pdfioDictSetObj(desc, "FontFile2", file_obj);
+  pdfioDictSetNumber(desc, "Flags", ttfIsFixedPitch(font) ? 0x21 : 0x20);
+  pdfioDictSetArray(desc, "FontBBox", bbox);
+  pdfioDictSetNumber(desc, "ItalicAngle", ttfGetItalicAngle(font));
+  pdfioDictSetNumber(desc, "Ascent", ttfGetAscent(font));
+  pdfioDictSetNumber(desc, "Descent", ttfGetDescent(font));
+  pdfioDictSetNumber(desc, "CapHeight", ttfGetCapHeight(font));
+  pdfioDictSetNumber(desc, "XHeight", ttfGetXHeight(font));
+  // Note: No TrueType value exists for this but PDF requires it, so we
+  // calculate a generic value from 50 to 250 based on the weight...
+  pdfioDictSetNumber(desc, "StemV", ttfGetWeight(font) / 4 + 25);
+
+  if ((desc_obj = pdfioFileCreateObj(file_obj->pdf, desc)) == NULL)
+    goto done;
+
+  pdfioObjClose(desc_obj);
+
+  if (unicode)
+  {
+    // Unicode (CID) font...
+    pdfio_dict_t	*cid2gid,	// CIDToGIDMap dictionary
+			*to_unicode;	// ToUnicode dictionary
+    pdfio_obj_t		*cid2gid_obj,	// CIDToGIDMap object
+			*to_unicode_obj;// ToUnicode object
+    size_t		i, j,		// Looping vars
+			num_cmap;	// Number of CMap entries
+    const int		*cmap;		// CMap entries
+    int			min_glyph,	// First glyph
+			max_glyph;	// Last glyph
+    unsigned short	glyphs[65536];	// Glyph to Unicode mapping
+    unsigned char	buffer[16384],	// Read buffer
+			*bufptr,	// Pointer into buffer
+			*bufend;	// End of buffer
+    pdfio_dict_t	*type2;		// CIDFontType2 font dictionary
+    pdfio_obj_t		*type2_obj;	// CIDFontType2 font object
+    pdfio_array_t	*descendants;	// Decendant font list
+    pdfio_dict_t	*sidict;	// CIDSystemInfo dictionary
+    pdfio_array_t	*w_array,	// Width array
+			*temp_array;	// Temporary width sub-array
+    int			w0, w1;		// Widths
+
+    // Create a CIDSystemInfo mapping to Adobe UCS2 v0 (Unicode)
+    if ((sidict = pdfioDictCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    pdfioDictSetString(sidict, "Registry", "Adobe");
+    pdfioDictSetString(sidict, "Ordering", "Identity");
+    pdfioDictSetNumber(sidict, "Supplement", 0);
+
+    // Create a CIDToGIDMap object for the Unicode font...
+    if ((cid2gid = pdfioDictCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+#ifndef DEBUG
+    pdfioDictSetName(cid2gid, "Filter", "FlateDecode");
+#endif // !DEBUG
+
+    if ((cid2gid_obj = pdfioFileCreateObj(file_obj->pdf, cid2gid)) == NULL)
+      goto done;
+
+#ifdef DEBUG
+    if ((st = pdfioObjCreateStream(cid2gid_obj, PDFIO_FILTER_NONE)) == NULL)
+#else
+    if ((st = pdfioObjCreateStream(cid2gid_obj, PDFIO_FILTER_FLATE)) == NULL)
+#endif // DEBUG
+      goto done;
+
+    cmap      = ttfGetCMap(font, &num_cmap);
+    min_glyph = 65536;
+    max_glyph = 0;
+    memset(glyphs, 0, sizeof(glyphs));
+
+    PDFIO_DEBUG("create_font: num_cmap=%u\n", (unsigned)num_cmap);
+
+    for (i = 0, bufptr = buffer, bufend = buffer + sizeof(buffer); i < num_cmap; i ++)
+    {
+      PDFIO_DEBUG("create_font: cmap[%u]=%d\n", (unsigned)i, cmap[i]);
+      if (cmap[i] < 0 || cmap[i] >= (int)(sizeof(glyphs) / sizeof(glyphs[0])))
+      {
+        // Map undefined glyph to .notdef...
+        *bufptr++ = 0;
+        *bufptr++ = 0;
+      }
+      else
+      {
+        // Map to specified glyph...
+        *bufptr++ = (unsigned char)(cmap[i] >> 8);
+        *bufptr++ = (unsigned char)(cmap[i] & 255);
+
+        glyphs[cmap[i]] = (unsigned short)i;
+        if (cmap[i] < min_glyph)
+          min_glyph = cmap[i];
+        if (cmap[i] > max_glyph)
+          max_glyph = cmap[i];
+      }
+
+      if (bufptr >= bufend)
+      {
+        // Flush buffer...
+        if (!pdfioStreamWrite(st, buffer, (size_t)(bufptr - buffer)))
+        {
+	  pdfioStreamClose(st);
+	  goto done;
+        }
+
+        bufptr = buffer;
+      }
+    }
+
+    if (bufptr > buffer)
+    {
+      // Flush buffer...
+      if (!pdfioStreamWrite(st, buffer, (size_t)(bufptr - buffer)))
+      {
+	pdfioStreamClose(st);
+	goto done;
+      }
+    }
+
+    pdfioStreamClose(st);
+
+    // ToUnicode mapping object
+    to_unicode = pdfioDictCreate(file_obj->pdf);
+    pdfioDictSetName(to_unicode, "Type", "CMap");
+    pdfioDictSetName(to_unicode, "CMapName", "Adobe-Identity-UCS2");
+    pdfioDictSetDict(to_unicode, "CIDSystemInfo", sidict);
+
+#ifndef DEBUG
+    pdfioDictSetName(to_unicode, "Filter", "FlateDecode");
+#endif // !DEBUG
+
+    if ((to_unicode_obj = pdfioFileCreateObj(file_obj->pdf, to_unicode)) == NULL)
+      goto done;
+
+#ifdef DEBUG
+    if ((st = pdfioObjCreateStream(to_unicode_obj, PDFIO_FILTER_NONE)) == NULL)
+#else
+    if ((st = pdfioObjCreateStream(to_unicode_obj, PDFIO_FILTER_FLATE)) == NULL)
+#endif // DEBUG
+      goto done;
+
+    pdfioStreamPuts(st,
+		    "stream\n"
+		    "/CIDInit /ProcSet findresource begin\n"
+		    "12 dict begin\n"
+		    "begincmap\n"
+		    "/CIDSystemInfo<<\n"
+		    "/Registry (Adobe)\n"
+		    "/Ordering (UCS2)\n"
+		    "/Supplement 0\n"
+		    ">> def\n"
+		    "/CMapName /Adobe-Identity-UCS2 def\n"
+		    "/CMapType 2 def\n"
+		    "1 begincodespacerange\n"
+		    "<0000> <FFFF>\n"
+		    "endcodespacerange\n"
+                    "endcmap\n"
+                    "CMapName currentdict /CMap defineresource pop\n"
+                    "end\n"
+                    "end\n");
+
+    pdfioStreamClose(st);
+
+    // Create a CIDFontType2 dictionary for the Unicode font...
+    if ((type2 = pdfioDictCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    // Width array
+    if ((w_array = pdfioArrayCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    for (i = 0, w0 = ttfGetWidth(font, 0), w1 = 0; i < 65536; w0 = w1)
+    {
+      for (j = 1; (i + j) < 65536; j ++)
+      {
+        if ((w1 = ttfGetWidth(font, (int)(i + j))) != w0)
+          break;
+      }
+
+      if (j >= 4)
+      {
+        // Encode a long sequence of zeros...
+	// Encode a repeating sequence...
+	pdfioArrayAppendNumber(w_array, (double)i);
+	pdfioArrayAppendNumber(w_array, (double)(i + j - 1));
+	pdfioArrayAppendNumber(w_array, w0);
+
+	i += j;
+      }
+      else
+      {
+        // Encode a non-repeating sequence...
+        pdfioArrayAppendNumber(w_array, (double)i);
+
+        if ((temp_array = pdfioArrayCreate(file_obj->pdf)) == NULL)
+	  goto done;
+
+        pdfioArrayAppendNumber(temp_array, w0);
+        for (i ++; i < 65536 && pdfioArrayGetSize(temp_array) < 8191; i ++, w0 = w1)
+        {
+          if ((w1 = ttfGetWidth(font, (int)i)) == w0 && i < 65530)
+          {
+            for (j = 1; j < 4; j ++)
+            {
+              if (ttfGetWidth(font, (int)(i + j)) != w0)
+                break;
+            }
+
+            if (j >= 4)
+	      break;
+	  }
+
+	  pdfioArrayAppendNumber(temp_array, w1);
+        }
+
+        pdfioArrayAppendArray(w_array, temp_array);
+      }
+    }
+
+    // Then the dictionary for the CID base font...
+    pdfioDictSetName(type2, "Type", "Font");
+    pdfioDictSetName(type2, "Subtype", "CIDFontType2");
+    pdfioDictSetName(type2, "BaseFont", basefont);
+    pdfioDictSetDict(type2, "CIDSystemInfo", sidict);
+    pdfioDictSetObj(type2, "CIDToGIDMap", cid2gid_obj);
+    pdfioDictSetObj(type2, "FontDescriptor", desc_obj);
+    pdfioDictSetArray(type2, "W", w_array);
+
+    if ((type2_obj = pdfioFileCreateObj(file_obj->pdf, type2)) == NULL)
+      goto done;
+
+    pdfioObjClose(type2_obj);
+
+    // Create a Type 0 font object...
+    if ((descendants = pdfioArrayCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    pdfioArrayAppendObj(descendants, type2_obj);
+
+    if ((dict = pdfioDictCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    pdfioDictSetName(dict, "Type", "Font");
+    pdfioDictSetName(dict, "Subtype", "Type0");
+    pdfioDictSetName(dict, "BaseFont", basefont);
+    pdfioDictSetArray(dict, "DescendantFonts", descendants);
+    pdfioDictSetName(dict, "Encoding", "Identity-H");
+    pdfioDictSetObj(dict, "ToUnicode", to_unicode_obj);
+
+    if ((obj = pdfioFileCreateObj(file_obj->pdf, dict)) != NULL)
+      pdfioObjClose(obj);
+  }
+  else
+  {
+    // Simple (CP1282 or custom encoding) 8-bit font...
+    int			ch;		// Character
+    pdfio_array_t	*w_array;	// Widths array
+
+    if (ttfGetMaxChar(font) >= 255 && !file_obj->pdf->cp1252_obj && !create_cp1252(file_obj->pdf))
+      goto done;
+
+    // Create a TrueType font object...
+    if ((dict = pdfioDictCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    pdfioDictSetName(dict, "Type", "Font");
+    pdfioDictSetName(dict, "Subtype", "TrueType");
+    pdfioDictSetName(dict, "BaseFont", basefont);
+    pdfioDictSetNumber(dict, "FirstChar", 32);
+    if (ttfGetMaxChar(font) >= 255)
+    {
+      pdfioDictSetObj(dict, "Encoding", file_obj->pdf->cp1252_obj);
+      pdfioDictSetNumber(dict, "LastChar", 255);
+    }
+    else
+    {
+      pdfioDictSetNumber(dict, "LastChar", ttfGetMaxChar(font));
+    }
+
+    // Build a Widths array for CP1252/WinAnsiEncoding
+    if ((w_array = pdfioArrayCreate(file_obj->pdf)) == NULL)
+      goto done;
+
+    for (ch = 32; ch < 256 && ch < ttfGetMaxChar(font); ch ++)
+    {
+      if (ch >= 0x80 && ch < 0xa0)
+	pdfioArrayAppendNumber(w_array, ttfGetWidth(font, _pdfio_cp1252[ch - 0x80]));
+      else
+	pdfioArrayAppendNumber(w_array, ttfGetWidth(font, ch));
+    }
+
+    pdfioDictSetArray(dict, "Widths", w_array);
+
+    pdfioDictSetObj(dict, "FontDescriptor", desc_obj);
+
+    if ((obj = pdfioFileCreateObj(file_obj->pdf, dict)) != NULL)
+      pdfioObjClose(obj);
+  }
+
+  done:
+
+  if (obj)
+    _pdfioObjSetExtension(obj, font, (_pdfio_extfree_t)ttfDelete);
+
+  return (obj);
+}
+
+
+//
 // 'create_image()' - Create an image object from some data.
 //
 
@@ -3510,14 +3846,12 @@ png_read_func(png_structp pp,		// I - PNG pointer
               png_bytep   data,		// I - Read buffer
               size_t      length)	// I - Number of bytes to read
 {
-  int		*fd = (int *)png_get_io_ptr(pp);
-					// Pointer to file descriptor
-  ssize_t	bytes;			// Bytes read
+  int	*fd = (int *)png_get_io_ptr(pp);// Pointer to file descriptor
 
 
   PDFIO_DEBUG("png_read_func(pp=%p, data=%p, length=%lu)\n", (void *)pp, (void *)data, (unsigned long)length);
 
-  if ((bytes = read(*fd, data, length)) < (ssize_t)length)
+  if (read(*fd, data, length) < (ssize_t)length)
     png_error(pp, "Unable to read from PNG file.");
 }
 #endif // HAVE_LIBPNG
@@ -3556,6 +3890,65 @@ update_png_crc(
   return (crc);
 }
 #endif // !HAVE_LIBPNG
+
+
+//
+// 'write_array()' - Write an array value.
+//
+
+static bool				// O - `true` on success, `false` on error
+write_array(pdfio_stream_t *st,		// I - Stream
+            pdfio_array_t  *a)		// I - Array
+{
+  size_t	i;			// Looping var
+  _pdfio_value_t *v;			// Current value
+
+
+  // Arrays are surrounded by square brackets ([ ... ])
+  if (!pdfioStreamPuts(st, "["))
+    return (false);
+
+  // Write each value...
+  for (i = a->num_values, v = a->values; i > 0; i --, v ++)
+  {
+    if (!write_value(st, v))
+      return (false);
+  }
+
+  // Closing bracket...
+  return (pdfioStreamPuts(st, "]"));
+}
+
+
+//
+// 'write_dict()' - Write a dictionary value.
+//
+
+static bool				// O - `true` on success, `false` on error
+write_dict(pdfio_stream_t *st,		// I - Stream
+           pdfio_dict_t   *dict)	// I - Dictionary
+{
+  size_t	i;			// Looping var
+  _pdfio_pair_t	*pair;			// Current key/value pair
+
+
+  // Dictionaries are bounded by "<<" and ">>"...
+  if (!pdfioStreamPuts(st, "<<"))
+    return (false);
+
+  // Write all of the key/value pairs...
+  for (i = dict->num_pairs, pair = dict->pairs; i > 0; i --, pair ++)
+  {
+    if (!pdfioStreamPrintf(st, "%N", pair->key))
+      return (false);
+
+    if (!write_value(st, &pair->value))
+      return (false);
+  }
+
+  // Close it up...
+  return (pdfioStreamPuts(st, ">>"));
+}
 
 
 //
@@ -3663,4 +4056,83 @@ write_string(pdfio_stream_t *st,	// I - Stream
   }
 
   return (pdfioStreamPuts(st, unicode ? ">" : ")"));
+}
+
+
+//
+// 'write_value()' - Write a PDF value.
+//
+
+static bool				// O - `true` on success, `false` on error
+write_value(pdfio_stream_t *st,		// I - Stream
+            _pdfio_value_t *v)		// I - Value
+{
+  switch (v->type)
+  {
+    default :
+        return (false);
+
+    case PDFIO_VALTYPE_ARRAY :
+        return (write_array(st, v->value.array));
+
+    case PDFIO_VALTYPE_BINARY :
+        {
+          size_t	databytes;	// Bytes to write
+          uint8_t	*dataptr;	// Pointer into data
+
+          if (!pdfioStreamPuts(st, "<"))
+	    return (false);
+
+          for (dataptr = v->value.binary.data, databytes = v->value.binary.datalen; databytes > 1; databytes -= 2, dataptr += 2)
+          {
+            if (!pdfioStreamPrintf(st, "%02X%02X", dataptr[0], dataptr[1]))
+              return (false);
+          }
+
+          if (databytes > 0 && !pdfioStreamPrintf(st, "%02X", dataptr[0]))
+            return (false);
+
+	  return (pdfioStreamPuts(st, ">"));
+        }
+
+    case PDFIO_VALTYPE_BOOLEAN :
+        if (v->value.boolean)
+          return (pdfioStreamPuts(st, " true"));
+        else
+          return (pdfioStreamPuts(st, " false"));
+
+    case PDFIO_VALTYPE_DATE :
+        {
+          struct tm	date;		// Date values
+          char		datestr[32];	// Formatted date value
+
+#ifdef _WIN32
+          gmtime_s(&date, &v->value.date.date);
+#else
+	  gmtime_r(&v->value.date.date, &date);
+#endif // _WIN32
+
+	  snprintf(datestr, sizeof(datestr), "D:%04d%02d%02d%02d%02d%02dZ", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday, date.tm_hour, date.tm_min, date.tm_sec);
+
+	  return (pdfioStreamPrintf(st, "%S", datestr));
+        }
+
+    case PDFIO_VALTYPE_DICT :
+        return (write_dict(st, v->value.dict));
+
+    case PDFIO_VALTYPE_INDIRECT :
+        return (pdfioStreamPrintf(st, " %lu %u R", (unsigned long)v->value.indirect.number, v->value.indirect.generation));
+
+    case PDFIO_VALTYPE_NAME :
+        return (pdfioStreamPrintf(st, "%N", v->value.name));
+
+    case PDFIO_VALTYPE_NULL :
+        return (pdfioStreamPuts(st, " null"));
+
+    case PDFIO_VALTYPE_NUMBER :
+        return (pdfioStreamPrintf(st, " %.6f", v->value.number));
+
+    case PDFIO_VALTYPE_STRING :
+	return (pdfioStreamPrintf(st, "%S", v->value.string));
+  }
 }

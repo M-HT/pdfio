@@ -1,7 +1,7 @@
 //
 // PDF dictionary functions for PDFio.
 //
-// Copyright © 2021-2025 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -32,7 +32,7 @@ pdfioDictClear(pdfio_dict_t *dict,	// I - Dictionary
 		pkey;			// Search key
 
 
-  PDFIO_DEBUG("pdfioDictClear(dict=%p, key=\"%s\")\n", dict, key);
+  PDFIO_DEBUG("pdfioDictClear(dict=%p, key=\"%s\")\n", (void *)dict, key);
 
   if (!dict || !key)
     return (false);
@@ -77,7 +77,11 @@ pdfioDictCopy(pdfio_file_t *pdf,	// I - PDF file
   _pdfio_value_t	v;		// Current destination value
 
 
-  PDFIO_DEBUG("pdfioDictCopy(pdf=%p, dict=%p(%p))\n", pdf, dict, dict ? dict->pdf : NULL);
+  PDFIO_DEBUG("pdfioDictCopy(pdf=%p, dict=%p(%p))\n", (void *)pdf, (void *)dict, dict ? (void *)dict->pdf : NULL);
+
+  // Range check input...
+  if (!pdf || !dict)
+    return (NULL);
 
   // Create the new dictionary...
   if ((ndict = pdfioDictCreate(pdf)) == NULL)
@@ -92,6 +96,8 @@ pdfioDictCopy(pdfio_file_t *pdf,	// I - PDF file
   // Copy and add each of the source dictionary's key/value pairs...
   for (i = dict->num_pairs, p = dict->pairs; i > 0; i --, p ++)
   {
+    PDFIO_DEBUG("pdfioDictCopy: key=\"%s\", value.type=%d\n", p->key, p->value.type);
+
     if (!strcmp(p->key, "Length") && p->value.type == PDFIO_VALTYPE_INDIRECT && dict->pdf != pdf)
     {
       // Don't use indirect stream lengths for copied objects...
@@ -102,15 +108,28 @@ pdfioDictCopy(pdfio_file_t *pdf,	// I - PDF file
       if (lenobj)
       {
         if (lenobj->value.type == PDFIO_VALTYPE_NONE)
-          _pdfioObjLoad(lenobj);
+        {
+          if (!_pdfioObjLoad(lenobj))
+          {
+            PDFIO_DEBUG("pdfioDictCopy: Unable to copy value of \"%s\", returning NULL.\n", p->key);
+            return (NULL);
+          }
+        }
 
 	v.value.number = lenobj->value.value.number;
       }
       else
+      {
         v.value.number = 0.0;
+      }
+
+      PDFIO_DEBUG("pdfioDictCopy: Length is %.0f.\n", v.value.number);
     }
     else if (!_pdfioValueCopy(pdf, &v, dict->pdf, &p->value))
+    {
+      PDFIO_DEBUG("pdfioDictCopy: Unable to copy value of \"%s\", returning NULL.\n", p->key);
       return (NULL);			// Let pdfioFileClose do the cleanup...
+    }
 
     if (_pdfioStringIsAllocated(dict->pdf, p->key))
       key = pdfioStringCreate(pdf, p->key);
@@ -475,8 +494,12 @@ pdfioDictGetString(pdfio_dict_t *dict,	// I - Dictionary
   _pdfio_value_t *value = _pdfioDictGetValue(dict, key);
 
 
+  PDFIO_DEBUG("pdfioDictGetString(dict=%p, key=\"%s\")\n", (void *)dict, key);
+  PDFIO_DEBUG("pdfioDictGetString: value=%p(type=%d)\n", (void *)value, value ? value->type : 0);
+
   if (value && value->type == PDFIO_VALTYPE_STRING)
   {
+    PDFIO_DEBUG("pdfioDictGetString: Returning \"%s\".\n", value->value.string);
     return (value->value.string);
   }
   else if (value && value->type == PDFIO_VALTYPE_DATE)
@@ -492,6 +515,8 @@ pdfioDictGetString(pdfio_dict_t *dict,	// I - Dictionary
     if (!(value->value.binary.datalen & 1) && (!memcmp(value->value.binary.data, "\376\377", 2) || !memcmp(value->value.binary.data, "\377\376", 2)))
     {
       // Copy UTF-16...
+      PDFIO_DEBUG("pdfioDictGetString: Converting UTF-16 to UTF-8 string.\n");
+
       _pdfio_utf16cpy(temp, value->value.binary.data, value->value.binary.datalen, sizeof(temp));
     }
     else
@@ -505,10 +530,13 @@ pdfioDictGetString(pdfio_dict_t *dict,	// I - Dictionary
     value->type         = PDFIO_VALTYPE_STRING;
     value->value.string = pdfioStringCreate(dict->pdf, temp);
 
+    PDFIO_DEBUG("pdfioDictGetString: Returning \"%s\".\n", value->value.string);
+
     return (value->value.string);
   }
   else
   {
+    PDFIO_DEBUG("pdfioDictGetString: Returning NULL.\n");
     return (NULL);
   }
 }
@@ -541,7 +569,7 @@ _pdfioDictGetValue(pdfio_dict_t *dict,	// I - Dictionary
 		*match;			// Matching key pair
 
 
-  PDFIO_DEBUG("_pdfioDictGetValue(dict=%p, key=\"%s\")\n", dict, key);
+  PDFIO_DEBUG("_pdfioDictGetValue(dict=%p, key=\"%s\")\n", (void *)dict, key);
 
   if (!dict || !dict->num_pairs || !key)
   {
@@ -626,7 +654,7 @@ _pdfioDictRead(pdfio_file_t   *pdf,	// I - PDF file
   _pdfio_value_t	value;		// Dictionary value
 
 
-  PDFIO_DEBUG("_pdfioDictRead(pdf=%p, obj=%p, tb=%p, depth=%lu)\n", pdf, obj, tb, (unsigned long)depth);
+  PDFIO_DEBUG("_pdfioDictRead(pdf=%p, obj=%p, tb=%p, depth=%lu)\n", (void *)pdf, (void *)obj, (void *)tb, (unsigned long)depth);
 
   // Create a dictionary and start reading...
   if ((dict = pdfioDictCreate(pdf)) == NULL)
@@ -657,8 +685,7 @@ _pdfioDictRead(pdfio_file_t   *pdf,	// I - PDF file
     }
     else if (_pdfioDictGetValue(dict, key + 1))
     {
-      // Issue 118: Discard duplicate key/value pairs, in the future this will
-      // be a warning message...
+      // Issue 118: Discard duplicate key/value pairs...
       _pdfioValueDelete(&value);
       if (_pdfioFileError(pdf, "WARNING: Discarding value for duplicate dictionary key '%s'.", key + 1))
         continue;
@@ -1001,7 +1028,7 @@ _pdfioDictSetValue(
   _pdfio_pair_t	*pair;			// Current pair
 
 
-  PDFIO_DEBUG("_pdfioDictSetValue(dict=%p, key=\"%s\", value=%p)\n", dict, key, (void *)value);
+  PDFIO_DEBUG("_pdfioDictSetValue(dict=%p, key=\"%s\", value=%p)\n", (void *)dict, key, (void *)value);
 
   // See if the key is already set...
   if (dict->num_pairs > 0)

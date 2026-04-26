@@ -1,7 +1,7 @@
 //
 // PDF value functions for PDFio.
 //
-// Copyright © 2021-2025 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -46,7 +46,7 @@ _pdfioValueCopy(pdfio_file_t   *pdfdst,	// I - Destination PDF file
 #endif // DEBUG
 
 
-  PDFIO_DEBUG("_pdfioValueCopy(pdfdst=%p, vdst=%p, pdfsrc=%p, vsrc=%p(%s))\n", pdfdst, vdst, pdfsrc, vsrc, types[vsrc->type]);
+  PDFIO_DEBUG("_pdfioValueCopy(pdfdst=%p, vdst=%p, pdfsrc=%p, vsrc=%p(%s))\n", (void *)pdfdst, (void *)vdst, (void *)pdfsrc, (void *)vsrc, types[vsrc->type]);
 
   if (pdfdst == pdfsrc && vsrc->type != PDFIO_VALTYPE_BINARY)
   {
@@ -76,7 +76,8 @@ _pdfioValueCopy(pdfio_file_t   *pdfdst,	// I - Destination PDF file
         return (NULL);
 
     case PDFIO_VALTYPE_ARRAY :
-        vdst->value.array = pdfioArrayCopy(pdfdst, vsrc->value.array);
+        if ((vdst->value.array = pdfioArrayCopy(pdfdst, vsrc->value.array)) == NULL)
+          return (NULL);
         break;
 
     case PDFIO_VALTYPE_BINARY :
@@ -101,12 +102,14 @@ _pdfioValueCopy(pdfio_file_t   *pdfdst,	// I - Destination PDF file
         break;
 
     case PDFIO_VALTYPE_DICT :
-        vdst->value.dict = pdfioDictCopy(pdfdst, vsrc->value.dict);
+        if ((vdst->value.dict = pdfioDictCopy(pdfdst, vsrc->value.dict)) == NULL)
+          return (NULL);
         break;
 
     case PDFIO_VALTYPE_NAME :
     case PDFIO_VALTYPE_STRING :
-        vdst->value.name = pdfioStringCreate(pdfdst, vsrc->value.name);
+        if ((vdst->value.name = pdfioStringCreate(pdfdst, vsrc->value.name)) == NULL)
+          return (NULL);
         break;
   }
 
@@ -365,7 +368,7 @@ _pdfioValueRead(pdfio_file_t   *pdf,	// I - PDF file
 #endif // DEBUG
 
 
-  PDFIO_DEBUG("_pdfioValueRead(pdf=%p, obj=%p, v=%p)\n", pdf, obj, v);
+  PDFIO_DEBUG("_pdfioValueRead(pdf=%p, obj=%p, v=%p)\n", (void *)pdf, (void *)obj, (void *)v);
 
   if (!token)
     goto done;

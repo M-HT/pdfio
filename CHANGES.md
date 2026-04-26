@@ -2,7 +2,68 @@ Changes in PDFio
 ================
 
 
-v1.5.4 - YYYY-MM-DD
+v1.6.3 - YYYY-MM-DD
+-------------------
+
+- Fixed `pdfioPageCopy` implementation to not copy the source document's entire
+  page tree (Issue #161)
+
+
+v1.6.2 - 2026-02-15
+-------------------
+
+- Increased the maximum length of a single string to 128k (Issue #146)
+- Added missing range checks to `pdfioArrayCopy` and `pdfioDictCopy`.
+- Refactored PDF encryption code to fix unlocking with certain files.
+- Improved xref table loop detection (Issue #148)
+- Changed how duplicate objects are handled in PDF files (Issue #155)
+- Fixed xref reconstruction for objects lacking a `Type` value.
+- Fixed `pdfioPageOpenStream` for indirect `Contents` arrays.
+- Fixed an error propagation bug when reading too-long values (Issue #146)
+- Fixed a bug when converting Unicode characters above plane 0 (issue #159)
+- Fixed a Clang warning.
+
+
+v1.6.1 - 2025-12-26
+-------------------
+
+- Added missing input checking to `pdfioFileCreateFontObjFromBase` function.
+- Updated support for UTF-16 strings (Issue #141)
+- Updated Xcode project to use installed PNG library.
+- Fixed decryption of PDF files using an Encrypt dictionary instead of an
+  indirect reference (Issue #139)
+- Fixed character range checking in a TTF support function.
+- Fixed some clang warnings.
+- Fixed the generated pkg-config file.
+
+
+v1.6.0 - 2025-10-06
+-------------------
+
+- Added generation of XMP metadata when writing PDFs (Issue #103)
+- Added "standard" `PDFIO_CS_CGATS001` color space for non-device CMYK
+  (Issue #104)
+- Added CMYK JPEG support with embedded ICC profiles or using the CGATS001
+  profile (Issue #104)
+- Added `pdfioFileAddOutputIntent` function to adding output intent information
+  to a PDF file (Issue #104)
+- Added explicit support for warning messages (Issue #118)
+- Added `pdfioFileCreateFontObjFromData` function for embedding fonts in
+  memory (Issue #120)
+- Added support for specifying PDF/A versions for created PDF files (Issue #122)
+- Added `pdfioContentBeginMarked` and `pdfioContentEndMarked` functions for
+  creating tagged PDF content (Issue #123)
+- Added `pdfioFileGetLanguage` and `pdfioFileSetLanguage` functions for getting
+  and setting the default/primary language of a PDF file (Issue #124)
+- Now add default grayscale, RGB, and CMYK profile resources to pages as needed
+  (Issue #104)
+- Fixed unsupported filter error (Issue #130)
+- Fixed EOF comment written to the PDF (Issue #136)
+- Fixed TTF cmap underflow error.
+- Fixed some Clang warnings.
+
+
+v1.5.4 - 2025-08-26
 -------------------
 
 - Updated indirect reference reading code to limit the range of generation

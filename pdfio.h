@@ -1,7 +1,7 @@
 //
 // Public header file for PDFio.
 //
-// Copyright © 2021-2025 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -23,9 +23,9 @@ extern "C" {
 // Version numbers...
 //
 
-#  define PDFIO_VERSION		"1.5.4"
+#  define PDFIO_VERSION		"1.6.3"
 #  define PDFIO_VERSION_MAJOR	1
-#  define PDFIO_VERSION_MINOR	5
+#  define PDFIO_VERSION_MINOR	6
 
 
 //
@@ -205,6 +205,7 @@ extern time_t		pdfioFileGetCreationDate(pdfio_file_t *pdf) _PDFIO_PUBLIC;
 extern const char	*pdfioFileGetCreator(pdfio_file_t *pdf) _PDFIO_PUBLIC;
 extern pdfio_array_t	*pdfioFileGetID(pdfio_file_t *pdf) _PDFIO_PUBLIC;
 extern const char	*pdfioFileGetKeywords(pdfio_file_t *pdf) _PDFIO_PUBLIC;
+extern const char	*pdfioFileGetLanguage(pdfio_file_t *pdf) _PDFIO_PUBLIC;
 extern time_t		pdfioFileGetModificationDate(pdfio_file_t *pdf) _PDFIO_PUBLIC;
 extern const char	*pdfioFileGetName(pdfio_file_t *pdf) _PDFIO_PUBLIC;
 extern size_t		pdfioFileGetNumObjs(pdfio_file_t *pdf) _PDFIO_PUBLIC;
@@ -221,6 +222,7 @@ extern void		pdfioFileSetAuthor(pdfio_file_t *pdf, const char *value) _PDFIO_PUB
 extern void		pdfioFileSetCreationDate(pdfio_file_t *pdf, time_t value) _PDFIO_PUBLIC;
 extern void		pdfioFileSetCreator(pdfio_file_t *pdf, const char *value) _PDFIO_PUBLIC;
 extern void		pdfioFileSetKeywords(pdfio_file_t *pdf, const char *value) _PDFIO_PUBLIC;
+extern void		pdfioFileSetLanguage(pdfio_file_t *pdf, const char *value) _PDFIO_PUBLIC;
 extern void		pdfioFileSetModificationDate(pdfio_file_t *pdf, time_t value) _PDFIO_PUBLIC;
 extern bool		pdfioFileSetPermissions(pdfio_file_t *pdf, pdfio_permission_t permissions, pdfio_encryption_t encryption, const char *owner_password, const char *user_password) _PDFIO_PUBLIC;
 extern void		pdfioFileSetSubject(pdfio_file_t *pdf, const char *value) _PDFIO_PUBLIC;

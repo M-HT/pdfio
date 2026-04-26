@@ -54,7 +54,7 @@ static int	get_char(_pdfio_token_t *tb);
 void
 _pdfioTokenClear(_pdfio_token_t *tb)	// I - Token buffer/stack
 {
-  PDFIO_DEBUG("_pdfioTokenClear(tb=%p)\n", tb);
+  PDFIO_DEBUG("_pdfioTokenClear(tb=%p)\n", (void *)tb);
 
   while (tb->num_tokens > 0)
   {
@@ -132,7 +132,7 @@ _pdfioTokenGet(_pdfio_token_t *tb,	// I - Token buffer/stack
     if ((len = strlen(tb->tokens[tb->num_tokens])) > (bufsize - 1))
     {
       // Value too large...
-      PDFIO_DEBUG("_pdfioTokenGet(tb=%p, buffer=%p, bufsize=%u): Token '%s' from stack too large.\n", tb, buffer, (unsigned)bufsize, tb->tokens[tb->num_tokens]);
+      PDFIO_DEBUG("_pdfioTokenGet(tb=%p, buffer=%p, bufsize=%u): Token '%s' from stack too large.\n", (void *)tb, (void *)buffer, (unsigned)bufsize, tb->tokens[tb->num_tokens]);
       *buffer = '\0';
       return (false);
     }
@@ -140,7 +140,7 @@ _pdfioTokenGet(_pdfio_token_t *tb,	// I - Token buffer/stack
     memcpy(buffer, tb->tokens[tb->num_tokens], len);
     buffer[len] = '\0';
 
-    PDFIO_DEBUG("_pdfioTokenGet(tb=%p, buffer=%p, bufsize=%u): Popping '%s' from stack.\n", tb, buffer, (unsigned)bufsize, buffer);
+    PDFIO_DEBUG("_pdfioTokenGet(tb=%p, buffer=%p, bufsize=%u): Popping '%s' from stack.\n", (void *)tb, (void *)buffer, (unsigned)bufsize, buffer);
 
     free(tb->tokens[tb->num_tokens]);
     tb->tokens[tb->num_tokens] = NULL;
@@ -393,9 +393,18 @@ _pdfioTokenRead(_pdfio_token_t *tb,	// I - Token buffer/stack
 	  return (false);
 	}
 
-	if (saw_nul)
+        if ((bufptr - buffer) > 3 && ((bufptr - buffer) & 1) != 0 && (!memcmp(buffer, "(\377\376", 3) || !memcmp(buffer, "(\376\377", 3)))
+        {
+          // UTF-16 string, convert to UTF-8...
+          PDFIO_DEBUG("_pdfioTokenRead: Converting string to UTF-8.\n", stderr);
+          _pdfio_utf16cpy(buffer + 1, (unsigned char *)buffer + 1, (size_t)(bufptr - buffer  - 1), bufsize - 1);
+
+          PDFIO_DEBUG("_pdfioTokenRead: Read '%s'.\n", buffer);
+          return (true);
+        }
+	else if (saw_nul)
 	{
-	  // Convert to a hex (binary) string...
+	  // Contains nul characters, convert to a hex (binary) string...
 	  char	*litptr,		// Pointer to literal character
 		*hexptr;		// Pointer to hex character
 	  size_t bytes = (size_t)(bufptr - buffer - 1);

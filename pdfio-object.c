@@ -1,7 +1,7 @@
 //
 // PDF object functions for PDFio.
 //
-// Copyright © 2021-2025 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -69,7 +69,7 @@ pdfioObjCopy(pdfio_file_t *pdf,		// I - PDF file
   ssize_t	bytes;			// Bytes read
 
 
-  PDFIO_DEBUG("pdfioObjCopy(pdf=%p, srcobj=%p(%p))\n", pdf, srcobj, srcobj ? srcobj->pdf : NULL);
+  PDFIO_DEBUG("pdfioObjCopy(pdf=%p, srcobj=%p(%u,%p))\n", (void *)pdf, (void *)srcobj, srcobj ? (unsigned)srcobj->number : 0, srcobj ? (void *)srcobj->pdf : NULL);
 
   // Range check input
   if (!pdf || !srcobj)
@@ -77,7 +77,10 @@ pdfioObjCopy(pdfio_file_t *pdf,		// I - PDF file
 
   // Load the object value if needed...
   if (srcobj->value.type == PDFIO_VALTYPE_NONE)
-    _pdfioObjLoad(srcobj);
+  {
+    if (!_pdfioObjLoad(srcobj))
+      return (NULL);
+  }
 
   // See if we have already mapped this object...
   if ((dstobj = _pdfioFileFindMappedObj(pdf, srcobj->pdf, srcobj->number)) != NULL)
@@ -308,7 +311,7 @@ pdfioObjGetLength(pdfio_obj_t *obj)	// I - Object
   // Try getting the length, directly or indirectly
   if ((length = (size_t)pdfioDictGetNumber(obj->value.value.dict, "Length")) > 0)
   {
-    PDFIO_DEBUG("pdfioObjGetLength(obj=%p) returning %lu.\n", obj, (unsigned long)length);
+    PDFIO_DEBUG("pdfioObjGetLength(obj=%p) returning %lu.\n", (void *)obj, (unsigned long)length);
     return (length);
   }
 
@@ -328,7 +331,7 @@ pdfioObjGetLength(pdfio_obj_t *obj)	// I - Object
     return (0);
   }
 
-  PDFIO_DEBUG("pdfioObjGetLength(obj=%p) returning %lu.\n", obj, (unsigned long)lenobj->value.value.number);
+  PDFIO_DEBUG("pdfioObjGetLength(obj=%p) returning %lu.\n", (void *)obj, (unsigned long)lenobj->value.value.number);
 
   return ((size_t)lenobj->value.value.number);
 }
@@ -440,7 +443,7 @@ _pdfioObjLoad(pdfio_obj_t *obj)		// I - Object
   _pdfio_token_t	tb;		// Token buffer/stack
 
 
-  PDFIO_DEBUG("_pdfioObjLoad(obj=%p(%lu)), offset=%lu\n", obj, (unsigned long)obj->number, (unsigned long)obj->offset);
+  PDFIO_DEBUG("_pdfioObjLoad(obj=%p(%lu)), offset=%lu\n", (void *)obj, (unsigned long)obj->number, (unsigned long)obj->offset);
 
   // Seek to the start of the object and read its header...
   if (_pdfioFileSeek(obj->pdf, obj->offset, SEEK_SET) != obj->offset)
@@ -502,7 +505,7 @@ _pdfioObjLoad(pdfio_obj_t *obj)		// I - Object
     return (false);
   }
 
-  PDFIO_DEBUG("_pdfioObjLoad: tb.bufptr=%p, tb.bufend=%p, tb.bufptr[0]=0x%02x, tb.bufptr[1]=0x%02x\n", tb.bufptr, tb.bufend, tb.bufptr[0], tb.bufptr[1]);
+  PDFIO_DEBUG("_pdfioObjLoad: tb.bufptr=%p, tb.bufend=%p, tb.bufptr[0]=0x%02x, tb.bufptr[1]=0x%02x\n", (void *)tb.bufptr, (void *)tb.bufend, tb.bufptr[0], tb.bufptr[1]);
 
   _pdfioTokenFlush(&tb);
 
@@ -544,6 +547,8 @@ pdfioObjOpenStream(pdfio_obj_t *obj,	// I - Object
   pdfio_stream_t	*st;		// Stream
 
 
+  PDFIO_DEBUG("pdfioObjOpenStream(obj=%p(%lu), decode=%s)\n", (void *)obj, obj ? (unsigned long)obj->number : 0, decode ? "true" : "false");
+
   // Range check input...
   if (!obj)
     return (NULL);
@@ -563,7 +568,10 @@ pdfioObjOpenStream(pdfio_obj_t *obj,	// I - Object
 
   // No stream if there is no dict or offset to a stream...
   if (obj->value.type != PDFIO_VALTYPE_DICT || !obj->stream_offset)
+  {
+    PDFIO_DEBUG("pdfioObjOpenStream: value.type=%d, stream_offset=%ld\n", obj->value.type, (long)obj->stream_offset);
     return (NULL);
+  }
 
   // Open the stream...
   if ((st = _pdfioStreamOpen(obj, decode)) != NULL)

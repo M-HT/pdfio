@@ -1,7 +1,7 @@
 //
 // PDF stream functions for PDFio.
 //
-// Copyright © 2021-2025 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -427,7 +427,7 @@ _pdfioStreamOpen(pdfio_obj_t *obj,	// I - Object
   const char		*type;		// Object type
 
 
-  PDFIO_DEBUG("_pdfioStreamOpen(obj=%p(%u), decode=%s)\n", obj, (unsigned)obj->number, decode ? "true" : "false");
+  PDFIO_DEBUG("_pdfioStreamOpen(obj=%p(%u), decode=%s)\n", (void *)obj, (unsigned)obj->number, decode ? "true" : "false");
 
   // Allocate a new stream object...
   if ((st = (pdfio_stream_t *)calloc(1, sizeof(pdfio_stream_t))) == NULL)
@@ -615,15 +615,10 @@ _pdfioStreamOpen(pdfio_obj_t *obj,	// I - Object
 
       st->remaining -= st->flate.avail_in;
     }
-    else if (!strcmp(filter, "LZWDecode"))
-    {
-      // LZW compression
-      st->filter = PDFIO_FILTER_LZW;
-    }
     else
     {
       // Something else we don't support
-      _pdfioFileError(st->pdf, "Unsupported stream filter '%N'.", filter);
+      _pdfioFileError(st->pdf, "Unsupported stream filter '/%s'.", filter);
       goto error;
     }
   }
@@ -848,7 +843,7 @@ pdfioStreamWrite(
 			*pptr;		// Previous raw buffer
 
 
-  PDFIO_DEBUG("pdfioStreamWrite(st=%p, buffer=%p, bytes=%lu)\n", st, buffer, (unsigned long)bytes);
+  PDFIO_DEBUG("pdfioStreamWrite(st=%p, buffer=%p, bytes=%lu)\n", (void *)st, buffer, (unsigned long)bytes);
 
   // Range check input...
   if (!st || st->pdf->mode != _PDFIO_MODE_WRITE || !buffer || !bytes)

@@ -1,7 +1,7 @@
 //
 // PDF array functions for PDFio.
 //
-// Copyright © 2021-2024 by Michael R Sweet.
+// Copyright © 2021-2026 by Michael R Sweet.
 //
 // Licensed under Apache License v2.0.  See the file "LICENSE" for more
 // information.
@@ -263,7 +263,11 @@ pdfioArrayCopy(pdfio_file_t  *pdf,	// I - PDF file
 			vdst;		// Current destination value
 
 
-  PDFIO_DEBUG("pdfioArrayCopy(pdf=%p, a=%p(%p))\n", pdf, a, a ? a->pdf : NULL);
+  PDFIO_DEBUG("pdfioArrayCopy(pdf=%p, a=%p(%p))\n", (void *)pdf, (void *)a, a ? (void *)a->pdf : NULL);
+
+  // Range check input...
+  if (!pdf || !a)
+    return (NULL);
 
   // Create the new array...
   if ((na = pdfioArrayCreate(pdf)) == NULL)
@@ -628,7 +632,7 @@ _pdfioArrayRead(pdfio_file_t   *pdf,	// I - PDF file
   _pdfio_value_t	value;		// Value
 
 
-  PDFIO_DEBUG("_pdfioArrayRead(pdf=%p, tb=%p)\n", pdf, tb);
+  PDFIO_DEBUG("_pdfioArrayRead(pdf=%p, tb=%p)\n", (void *)pdf, (void *)tb);
 
   // Create an array...
   if ((array = pdfioArrayCreate(pdf)) == NULL)

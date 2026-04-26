@@ -3,8 +3,8 @@ pdfio - PDF Read/Write Library
 
 ![Version](https://img.shields.io/github/v/release/michaelrsweet/pdfio?include_prereleases)
 ![Apache 2.0](https://img.shields.io/github/license/michaelrsweet/pdfio)
-[![Build Status](https://img.shields.io/github/workflow/status/michaelrsweet/pdfio/Build)](https://github.com/michaelrsweet/pdfio/actions/workflows/build.yml)
-[![Coverity Scan Status](https://img.shields.io/coverity/scan/22385.svg)](https://scan.coverity.com/projects/michaelrsweet-pdfio)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/michaelrsweet/pdfio/build.yml)](https://github.com/michaelrsweet/pdfio/actions/workflows/build.yml)
+[![Coverity Scan Status](https://img.shields.io/coverity/scan/23194.svg)](https://scan.coverity.com/projects/michaelrsweet-pdfio)
 
 PDFio is a simple C library for reading and writing PDF files.  The primary
 goals of PDFio are:
@@ -89,7 +89,7 @@ generates a static library that will be installed under "/usr/local" with:
 Legal Stuff
 -----------
 
-PDFio is Copyright © 2021-2025 by Michael R Sweet.
+PDFio is Copyright © 2021-2026 by Michael R Sweet.
 
 This software is licensed under the Apache License Version 2.0 with an
 (optional) exception to allow linking against GPL2/LGPL2 software.  See the
