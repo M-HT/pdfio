@@ -18,6 +18,12 @@ v1.7.0 - YYYY-MM-DD
 - Fixed a buffer overflow in the (still not enabled) AES-256 code.
 
 
+v1.6.4 - YYYY-MM-DD
+-------------------
+
+- Fixed `pdfioPageCopy` implementation to not force a CropBox value (Issue #166)
+
+
 v1.6.3 - 2026-04-30
 -------------------
 
